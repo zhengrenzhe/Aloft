@@ -24,6 +24,7 @@ struct OutputPipeline {
     private var committedLines: [String] = []
     private var currentLine = ""
     private var latestMatch: KeywordMatchEvent?
+    private var pendingCarriageReturn = false
 
     init(entryID: UUID, keywords: [String], lineLimit: Int) {
         self.lineLimit = max(0, lineLimit)
@@ -33,28 +34,26 @@ struct OutputPipeline {
     mutating func consume(_ data: Data, at timestamp: Date) -> OutputUpdate {
         var events: [KeywordMatchEvent] = []
         let plainText = filter.consume(decoder.consume(data))
-
-        for scalar in plainText.unicodeScalars {
-            switch scalar.value {
-            case 0x0D:
-                evaluateCurrentLine(at: timestamp, events: &events)
-                currentLine = ""
-                _ = matcher.matches(in: currentLine, at: timestamp)
-            case 0x0A:
-                evaluateCurrentLine(at: timestamp, events: &events)
-                commitCurrentLine()
-                currentLine = ""
-                _ = matcher.matches(in: currentLine, at: timestamp)
-            default:
-                currentLine.unicodeScalars.append(scalar)
-                evaluateCurrentLine(at: timestamp, events: &events)
-            }
-        }
+        process(plainText, at: timestamp, events: &events)
 
         return OutputUpdate(snapshot: snapshot, matches: events)
     }
 
     mutating func insertSessionSeparator(at timestamp: Date) {
+        var discardedEvents: [KeywordMatchEvent] = []
+        process(filter.consume(decoder.finish()), at: timestamp, events: &discardedEvents)
+        if pendingCarriageReturn {
+            pendingCarriageReturn = false
+            commitCurrentLine()
+            resetCurrentLineRevision()
+        }
+        if !currentLine.isEmpty {
+            commitCurrentLine()
+        }
+        currentLine = ""
+        matcher.resetRevision()
+        filter = ANSITextFilter()
+
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
@@ -69,6 +68,7 @@ struct OutputPipeline {
         committedLines.removeAll()
         currentLine = ""
         latestMatch = nil
+        pendingCarriageReturn = false
     }
 
     private var snapshot: OutputSnapshot {
@@ -79,10 +79,42 @@ struct OutputPipeline {
         )
     }
 
-    private mutating func evaluateCurrentLine(at timestamp: Date, events: inout [KeywordMatchEvent]) {
-        let newEvents = matcher.matches(in: currentLine, at: timestamp)
-        events.append(contentsOf: newEvents)
-        latestMatch = newEvents.last ?? latestMatch
+    private mutating func process(_ plainText: String, at timestamp: Date, events: inout [KeywordMatchEvent]) {
+        for scalar in plainText.unicodeScalars {
+            if pendingCarriageReturn {
+                if scalar.value == 0x0A {
+                    pendingCarriageReturn = false
+                    commitCurrentLine()
+                    resetCurrentLineRevision()
+                    continue
+                }
+                resolvePendingCarriageReturn()
+            }
+
+            switch scalar.value {
+            case 0x0D:
+                pendingCarriageReturn = true
+            case 0x0A:
+                commitCurrentLine()
+                resetCurrentLineRevision()
+            default:
+                currentLine.unicodeScalars.append(scalar)
+                let newEvents = matcher.append(scalar, in: currentLine, at: timestamp)
+                events.append(contentsOf: newEvents)
+                latestMatch = newEvents.last ?? latestMatch
+            }
+        }
+    }
+
+    private mutating func resolvePendingCarriageReturn() {
+        guard pendingCarriageReturn else { return }
+        pendingCarriageReturn = false
+        resetCurrentLineRevision()
+    }
+
+    private mutating func resetCurrentLineRevision() {
+        currentLine = ""
+        matcher.resetRevision()
     }
 
     private mutating func commitCurrentLine() {

@@ -38,6 +38,19 @@ struct UTF8StreamDecoder {
         default: return 0
         }
 
+        if continuationCount > 0 {
+            let secondByte = bytes[index]
+            switch leadingByte {
+            case 0xE0 where secondByte < 0xA0,
+                 0xED where secondByte > 0x9F,
+                 0xF0 where secondByte < 0x90,
+                 0xF4 where secondByte > 0x8F:
+                return 0
+            default:
+                break
+            }
+        }
+
         let availableLength = continuationCount + 1
         return availableLength < scalarLength ? availableLength : 0
     }

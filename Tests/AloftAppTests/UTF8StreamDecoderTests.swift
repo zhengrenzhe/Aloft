@@ -31,4 +31,34 @@ final class UTF8StreamDecoderTests: XCTestCase {
         XCTAssertEqual(decoder.finish(), "�")
         XCTAssertEqual(decoder.finish(), "")
     }
+
+    func testIllegalThreeAndFourBytePrefixesAreDecodedImmediately() {
+        for (bytes, expected): ([UInt8], String) in [
+            ([0xE0, 0x80], "��"),
+            ([0xED, 0xA0], "��"),
+            ([0xF4, 0x90], "��"),
+        ] {
+            var decoder = UTF8StreamDecoder()
+
+            XCTAssertEqual(decoder.consume(Data(bytes)), expected)
+            XCTAssertEqual(decoder.finish(), "")
+        }
+    }
+
+    func testInvalidFourByteSecondByteIsNotBufferedForTheNextRead() {
+        var decoder = UTF8StreamDecoder()
+
+        XCTAssertEqual(decoder.consume(Data([0xF0])), "")
+        XCTAssertEqual(decoder.consume(Data([0x80])), "��")
+        XCTAssertEqual(decoder.consume(Data("next".utf8)), "next")
+        XCTAssertEqual(decoder.finish(), "")
+    }
+
+    func testInvalidContinuationIsDecodedWithoutWaitingForFinish() {
+        var decoder = UTF8StreamDecoder()
+
+        XCTAssertEqual(decoder.consume(Data([0xF0])), "")
+        XCTAssertEqual(decoder.consume(Data([0x41])), "�A")
+        XCTAssertEqual(decoder.finish(), "")
+    }
 }
