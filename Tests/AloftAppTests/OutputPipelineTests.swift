@@ -48,6 +48,12 @@ final class OutputPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.consume(Data("dy\n".utf8), at: .distantPast).matches.map(\.keyword), ["ready"])
     }
 
+    func testKeywordMatchIsDeliveredWithoutWaitingForANewlineOrNextRead() {
+        var pipeline = OutputPipeline(entryID: UUID(), keywords: ["ready"], lineLimit: 20_000)
+
+        XCTAssertEqual(pipeline.consume(Data("ready".utf8), at: .distantPast).matches.map(\.keyword), ["ready"])
+    }
+
     func testKeywordIsDeduplicatedWithinAnUnchangedLineRevision() {
         var pipeline = OutputPipeline(entryID: UUID(), keywords: ["ready"], lineLimit: 20_000)
 
@@ -212,6 +218,77 @@ final class OutputPipelineTests: XCTestCase {
         XCTAssertEqual(update.matches.map(\.keyword), ["aba", "abab"])
     }
 
+    func testCanonicallyReorderedCombiningMarksMatchInOneReadAndAcrossReads() {
+        let keyword = "a\u{0300}\u{0315}"
+        let output = "a\u{0315}\u{0300}"
+        XCTAssertTrue(output.contains(keyword))
+
+        XCTAssertEqual(matches(for: output, keywords: [keyword], splitByScalar: false), [keyword])
+        XCTAssertEqual(matches(for: output, keywords: [keyword], splitByScalar: true), [keyword])
+    }
+
+    func testCanonicallyEquivalentPrecomposedAndDecomposedCharactersMatch() {
+        let keyword = "\u{1E08}"
+        let output = "\u{0106}\u{0327}"
+        XCTAssertTrue(output.contains(keyword))
+
+        XCTAssertEqual(matches(for: output, keywords: [keyword], splitByScalar: false), [keyword])
+        XCTAssertEqual(matches(for: output, keywords: [keyword], splitByScalar: true), [keyword])
+    }
+
+    func testKeywordMatchingDoesNotCrossCharacterBoundaries() {
+        for (output, keyword) in [
+            ("é", "e"),
+            ("é", "\u{0301}"),
+            ("café", "cafe"),
+            ("\u{1E08}", "C"),
+        ] {
+            XCTAssertFalse(output.contains(keyword), "\(output), \(keyword)")
+            XCTAssertTrue(matches(for: output, keywords: [keyword], splitByScalar: false).isEmpty)
+            XCTAssertTrue(matches(for: output, keywords: [keyword], splitByScalar: true).isEmpty)
+        }
+    }
+
+    func testGeneratedCharacterAwareDifferentialMatchesStringContains() {
+        let marks = ["\u{0300}", "\u{0315}", "\u{035C}"]
+        let canonicalPermutations = permutations(of: marks).map { "a" + $0.joined() }
+        let lines = canonicalPermutations + [
+            "café",
+            "cafe\u{0301}",
+            "\u{1E08}",
+            "\u{0106}\u{0327}",
+            "ready",
+            "😀中文",
+            "ababab",
+        ]
+        let keywords = canonicalPermutations + [
+            "café",
+            "cafe\u{0301}",
+            "cafe",
+            "e",
+            "\u{0301}",
+            "\u{1E08}",
+            "\u{0106}\u{0327}",
+            "C",
+            "ready",
+            "ea",
+            "😀",
+            "中",
+            "aba",
+            "abab",
+        ]
+
+        XCTAssertEqual(lines.count * keywords.count, 260)
+        for line in lines {
+            let expected = keywords.filter { line.contains($0) }
+            XCTAssertEqual(
+                Set(matches(for: line, keywords: keywords, splitByScalar: false)),
+                Set(expected),
+                "line: \(line)"
+            )
+        }
+    }
+
     func testBufferKeepsLatestTwentyThousandCommittedLines() {
         var pipeline = OutputPipeline(entryID: UUID(), keywords: [], lineLimit: 20_000)
         let text = (0..<20_005).map(String.init).joined(separator: "\n") + "\n"
@@ -221,5 +298,26 @@ final class OutputPipelineTests: XCTestCase {
         XCTAssertEqual(snapshot.committedLines.count, 20_000)
         XCTAssertEqual(snapshot.committedLines.first, "5")
         XCTAssertEqual(snapshot.committedLines.last, "20004")
+    }
+
+    private func matches(for line: String, keywords: [String], splitByScalar: Bool) -> [String] {
+        var pipeline = OutputPipeline(entryID: UUID(), keywords: keywords, lineLimit: 20_000)
+        if splitByScalar {
+            return (line + "\n").unicodeScalars.flatMap { scalar in
+                pipeline.consume(Data(String(scalar).utf8), at: .distantPast).matches.map(\.keyword)
+            }
+        }
+        return pipeline.consume(Data((line + "\n").utf8), at: .distantPast).matches.map(\.keyword)
+    }
+
+    private func permutations(of values: [String]) -> [[String]] {
+        guard let first = values.first else { return [[]] }
+        return permutations(of: Array(values.dropFirst())).flatMap { permutation in
+            (0...permutation.count).map { index in
+                var result = permutation
+                result.insert(first, at: index)
+                return result
+            }
+        }
     }
 }

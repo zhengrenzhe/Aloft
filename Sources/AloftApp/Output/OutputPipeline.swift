@@ -35,6 +35,10 @@ struct OutputPipeline {
         var events: [KeywordMatchEvent] = []
         let plainText = filter.consume(decoder.consume(data))
         process(plainText, at: timestamp, events: &events)
+        record(
+            matcher.flushTrailingCharacter(in: currentLine, at: timestamp),
+            in: &events
+        )
 
         return OutputUpdate(snapshot: snapshot, matches: events)
     }
@@ -45,10 +49,12 @@ struct OutputPipeline {
         process(filter.consume(decoder.finish()), at: timestamp, events: &events)
         if pendingCarriageReturn {
             pendingCarriageReturn = false
+            record(matcher.finishRevision(in: currentLine, at: timestamp), in: &events)
             commitCurrentLine()
             resetCurrentLineRevision()
         }
         if !currentLine.isEmpty {
+            record(matcher.finishRevision(in: currentLine, at: timestamp), in: &events)
             commitCurrentLine()
         }
         currentLine = ""
@@ -86,17 +92,19 @@ struct OutputPipeline {
             if pendingCarriageReturn {
                 if scalar.value == 0x0A {
                     pendingCarriageReturn = false
+                    record(matcher.finishRevision(in: currentLine, at: timestamp), in: &events)
                     commitCurrentLine()
                     resetCurrentLineRevision()
                     continue
                 }
-                resolvePendingCarriageReturn()
+                resolvePendingCarriageReturn(at: timestamp, events: &events)
             }
 
             switch scalar.value {
             case 0x0D:
                 pendingCarriageReturn = true
             case 0x0A:
+                record(matcher.finishRevision(in: currentLine, at: timestamp), in: &events)
                 commitCurrentLine()
                 resetCurrentLineRevision()
             default:
@@ -108,10 +116,19 @@ struct OutputPipeline {
         }
     }
 
-    private mutating func resolvePendingCarriageReturn() {
+    private mutating func resolvePendingCarriageReturn(
+        at timestamp: Date,
+        events: inout [KeywordMatchEvent]
+    ) {
         guard pendingCarriageReturn else { return }
         pendingCarriageReturn = false
+        record(matcher.finishRevision(in: currentLine, at: timestamp), in: &events)
         resetCurrentLineRevision()
+    }
+
+    private mutating func record(_ newEvents: [KeywordMatchEvent], in events: inout [KeywordMatchEvent]) {
+        events.append(contentsOf: newEvents)
+        latestMatch = newEvents.last ?? latestMatch
     }
 
     private mutating func resetCurrentLineRevision() {
