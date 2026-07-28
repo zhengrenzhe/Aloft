@@ -121,6 +121,72 @@ final class ProcessLauncherTests: XCTestCase {
         })
         XCTAssertEqual(result, .exited(code: 7))
     }
+
+    func testLaunchResetsChildSignalMaskAndPreservesParentMask() throws {
+        var termSet = sigset_t()
+        XCTAssertEqual(sigemptyset(&termSet), 0)
+        XCTAssertEqual(sigaddset(&termSet, SIGTERM), 0)
+
+        var originalSet = sigset_t()
+        XCTAssertEqual(
+            pthread_sigmask(SIG_BLOCK, &termSet, &originalSet),
+            0
+        )
+        var parentMaskRestored = false
+        defer {
+            if parentMaskRestored == false {
+                pthread_sigmask(SIG_SETMASK, &originalSet, nil)
+            }
+        }
+
+        var blockedSet = sigset_t()
+        XCTAssertEqual(pthread_sigmask(SIG_BLOCK, nil, &blockedSet), 0)
+        XCTAssertEqual(sigismember(&blockedSet, SIGTERM), 1)
+
+        let process = try ProcessLauncher.launch(
+            command: "exec sleep 30",
+            cwd: "/tmp"
+        )
+        defer {
+            try? ProcessLauncher.signalProcessGroup(
+                process.processGroupID,
+                signal: SIGKILL
+            )
+            close(process.masterFileDescriptor)
+            _ = try? ProcessLauncher.wait(pid: process.pid, noHang: false)
+        }
+
+        XCTAssertEqual(
+            pthread_sigmask(SIG_SETMASK, &originalSet, nil),
+            0
+        )
+        parentMaskRestored = true
+
+        var restoredSet = sigset_t()
+        XCTAssertEqual(pthread_sigmask(SIG_BLOCK, nil, &restoredSet), 0)
+        for signalNumber in 1 ..< NSIG {
+            XCTAssertEqual(
+                sigismember(&restoredSet, signalNumber),
+                sigismember(&originalSet, signalNumber),
+                "parent mask changed for signal \(signalNumber)"
+            )
+        }
+
+        XCTAssertTrue(
+            try waitUntil(timeout: 2) {
+                try executableName(pid: process.pid) == "sleep"
+            },
+            "child did not exec sleep"
+        )
+        try ProcessLauncher.signalProcessGroup(
+            process.processGroupID,
+            signal: SIGTERM
+        )
+        XCTAssertEqual(
+            try waitForChildExit(pid: process.pid, timeout: 2),
+            .signaled(signal: SIGTERM)
+        )
+    }
 }
 
 private func readUntilEOFOrTimeout(fd: Int32, timeout: TimeInterval) throws -> String {

@@ -18,6 +18,7 @@ enum ProcessLaunchPhase: String, Sendable {
     case openPTY
     case errorPipe
     case fork
+    case signalMask
     case setsid
     case controllingTTY
     case duplicateStandardIO
@@ -97,6 +98,8 @@ enum ProcessLauncher {
             return .errorPipe
         case ALOFT_LAUNCH_FORK:
             return .fork
+        case ALOFT_LAUNCH_SIGNAL_MASK:
+            return .signalMask
         case ALOFT_LAUNCH_SETSID:
             return .setsid
         case ALOFT_LAUNCH_CONTROLLING_TTY:

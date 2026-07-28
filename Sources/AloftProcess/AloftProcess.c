@@ -82,6 +82,11 @@ aloft_launch_result aloft_launch(const char *command, const char *cwd) {
     if (pid == 0) {
         close(error_pipe[0]);
 
+        sigset_t empty_set;
+        if (sigemptyset(&empty_set) == -1 ||
+            sigprocmask(SIG_SETMASK, &empty_set, NULL) == -1) {
+            child_fail(error_pipe[1], ALOFT_LAUNCH_SIGNAL_MASK);
+        }
         if (setsid() == -1) {
             child_fail(error_pipe[1], ALOFT_LAUNCH_SETSID);
         }
