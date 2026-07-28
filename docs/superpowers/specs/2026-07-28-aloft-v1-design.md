@@ -275,12 +275,24 @@ entry without affecting the process.
 
 - An entry supports multiple keywords.
 - Empty keywords are rejected.
-- Matching is a case-sensitive literal substring search.
+- The cleaned logical line and every keyword are tokenized as Unicode 17 UAX
+  #29 extended grapheme clusters (EGCs).
+- Matching is a case-sensitive contiguous token-subsequence search. Canonically
+  equivalent EGC tokens compare equal.
+- A scalar substring inside one EGC never matches. The matcher does not use the
+  host Swift `Character` iterator or `String.contains` as its segmentation
+  oracle.
 - Regular expressions are outside v1.
 - A match event contains entry ID, keyword, complete cleaned logical line, and
   timestamp.
 - Each entry retains its latest match event.
 - The app retains one latest global match event for the menu bar.
+
+The product contract follows the user's B ruling: Unicode 17 UAX tokens define
+matching even when the current host Swift runtime segments differently. For
+Unicode 17 `GraphemeBreakTest.txt` fixture 785, U+1019 U+1039 U+1018 is one
+Myanmar EGC. That complete keyword matches; the two substrings that the current
+host Swift runtime separates (`U+1019 U+1039` and `U+1018`) do not match.
 
 The menu bar never executes an action based on a match. Matching only changes
 displayed attention information in v1.

@@ -248,8 +248,6 @@ final class OutputPipelineTests: XCTestCase {
     func testCanonicallyReorderedCombiningMarksMatchInOneReadAndAcrossReads() {
         let keyword = "a\u{0300}\u{0315}"
         let output = "a\u{0315}\u{0300}"
-        XCTAssertTrue(output.contains(keyword))
-
         XCTAssertEqual(matches(for: output, keywords: [keyword], splitByScalar: false), [keyword])
         XCTAssertEqual(matches(for: output, keywords: [keyword], splitByScalar: true), [keyword])
     }
@@ -257,26 +255,23 @@ final class OutputPipelineTests: XCTestCase {
     func testCanonicallyEquivalentPrecomposedAndDecomposedCharactersMatch() {
         let keyword = "\u{1E08}"
         let output = "\u{0106}\u{0327}"
-        XCTAssertTrue(output.contains(keyword))
-
         XCTAssertEqual(matches(for: output, keywords: [keyword], splitByScalar: false), [keyword])
         XCTAssertEqual(matches(for: output, keywords: [keyword], splitByScalar: true), [keyword])
     }
 
-    func testKeywordMatchingDoesNotCrossCharacterBoundaries() {
+    func testKeywordMatchingDoesNotCrossUAX17TokenBoundaries() {
         for (output, keyword) in [
             ("é", "e"),
             ("é", "\u{0301}"),
             ("café", "cafe"),
             ("\u{1E08}", "C"),
         ] {
-            XCTAssertFalse(output.contains(keyword), "\(output), \(keyword)")
             XCTAssertTrue(matches(for: output, keywords: [keyword], splitByScalar: false).isEmpty)
             XCTAssertTrue(matches(for: output, keywords: [keyword], splitByScalar: true).isEmpty)
         }
     }
 
-    func testGeneratedCharacterAwareDifferentialMatchesStringContains() {
+    func testGeneratedUAX17TokenCasesMatchExplicitExpectedKeywords() {
         let marks = ["\u{0300}", "\u{0315}", "\u{035C}"]
         let canonicalPermutations = permutations(of: marks).map { "a" + $0.joined() }
         let lines = canonicalPermutations + [
@@ -307,16 +302,29 @@ final class OutputPipelineTests: XCTestCase {
 
         XCTAssertEqual(lines.count * keywords.count, 260)
         for line in lines {
-            let expected = keywords.filter { line.contains($0) }
+            let expected: Set<String>
+            if hasSameScalars(line, as: "café") || hasSameScalars(line, as: "cafe\u{0301}") {
+                expected = ["café", "cafe\u{0301}"]
+            } else if hasSameScalars(line, as: "\u{1E08}") || hasSameScalars(line, as: "\u{0106}\u{0327}") {
+                expected = ["\u{1E08}", "\u{0106}\u{0327}"]
+            } else if line == "ready" {
+                expected = ["ready", "e", "ea"]
+            } else if line == "😀中文" {
+                expected = ["😀", "中"]
+            } else if line == "ababab" {
+                expected = ["aba", "abab"]
+            } else {
+                expected = Set(canonicalPermutations)
+            }
             XCTAssertEqual(
                 Set(matches(for: line, keywords: keywords, splitByScalar: false)),
-                Set(expected),
+                expected,
                 "line: \(line)"
             )
         }
     }
 
-    func testCrossReadTransitionDifferentialMatchesFinalCharacterPresence() {
+    func testCrossReadUAX17TokenTransitionsMatchExplicitPresence() {
         let cases: [(line: String, keyword: String)] = [
             ("e\u{0301}e", "e"),
             ("👩\u{200D}💻👩", "👩"),
@@ -332,11 +340,11 @@ final class OutputPipelineTests: XCTestCase {
             }
             events.append(contentsOf: pipeline.consume(Data("\n".utf8), at: .distantPast).matches)
 
-            XCTAssertEqual(!events.isEmpty, testCase.line.contains(testCase.keyword), "line: \(testCase.line)")
+            XCTAssertFalse(events.isEmpty, "line: \(testCase.line)")
         }
     }
 
-    func testUAX29BoundaryClassesMatchSwiftCharacterSegmentationAcrossScalarReads() {
+    func testUAX17BoundaryClassesMatchTokenExpectationsAcrossScalarReads() {
         let joinedClusters: [(line: String, excludedKeyword: String)] = [
             ("a\u{0301}", "a"), // Extend
             ("👩\u{200D}💻", "👩"), // ZWJ + Extended_Pictographic
@@ -347,47 +355,39 @@ final class OutputPipelineTests: XCTestCase {
         ]
 
         for testCase in joinedClusters {
-            XCTAssertFalse(testCase.line.contains(testCase.excludedKeyword), "line: \(testCase.line)")
             XCTAssertTrue(matches(for: testCase.line, keywords: [testCase.excludedKeyword], splitByScalar: false).isEmpty)
             XCTAssertEqual(matches(for: testCase.line, keywords: [testCase.line], splitByScalar: true), [testCase.line])
         }
 
         let controls = "a\u{0001}b"
-        XCTAssertTrue(controls.contains("a"))
-        XCTAssertTrue(controls.contains("\u{0001}"))
-        XCTAssertTrue(controls.contains("b"))
         XCTAssertEqual(
             Set(matches(for: controls, keywords: ["a", "\u{0001}", "b"], splitByScalar: true)),
             ["a", "\u{0001}", "b"]
         )
     }
 
-    func testFourCrossReadPresenceTransitionsMatchStringContains() {
-        let cases: [(chunks: [String], keyword: String)] = [
-            (["e", "\u{0301}", "e"], "e"),
-            (["👩", "\u{200D}", "💻", "👩"], "👩"),
-            (["\u{1F1FA}", "\u{1F1F8}", "\u{1F1FA}"], "\u{1F1FA}"),
-            (["a", "\u{0315}", "\u{0300}"], "a\u{0300}\u{0315}"),
+    func testFourCrossReadUAX17TokenPresenceTransitions() {
+        let cases: [(chunks: [String], keyword: String, expectedPresence: [Bool])] = [
+            (["e", "\u{0301}", "e"], "e", [true, false, true]),
+            (["👩", "\u{200D}", "💻", "👩"], "👩", [true, false, false, true]),
+            (["\u{1F1FA}", "\u{1F1F8}", "\u{1F1FA}"], "\u{1F1FA}", [true, false, true]),
+            (["a", "\u{0315}", "\u{0300}"], "a\u{0300}\u{0315}", [false, false, true]),
         ]
         for testCase in cases {
             var pipeline = OutputPipeline(entryID: UUID(), keywords: [testCase.keyword], lineLimit: 20_000)
-            var line = ""
             var wasPresent = false
 
-            for chunk in testCase.chunks {
-                line.append(chunk)
+            for (index, chunk) in testCase.chunks.enumerated() {
                 let events = pipeline.consume(Data(chunk.utf8), at: .distantPast).matches
-                let isPresent = line.contains(testCase.keyword)
+                let isPresent = testCase.expectedPresence[index]
                 XCTAssertEqual(events.map(\.keyword), isPresent && !wasPresent ? [testCase.keyword] : [])
                 wasPresent = isPresent
             }
         }
     }
 
-    func testIndicConjunctKeywordMatchesAsOneCharacterInOneAndScalarReads() {
+    func testUAX17IndicConjunctKeywordMatchesAsOneTokenInOneAndScalarReads() {
         let conjunct = "\u{0915}\u{094D}\u{0924}"
-        XCTAssertEqual(conjunct.count, 1)
-        XCTAssertTrue(conjunct.contains(conjunct))
 
         for splitByScalar in [false, true] {
             let events = matchEvents(for: conjunct, keywords: [conjunct], splitByScalar: splitByScalar)
@@ -396,14 +396,13 @@ final class OutputPipelineTests: XCTestCase {
         }
     }
 
-    func testIndicConjunctDoesNotMatchItsConsonantPrefixInOneRead() {
+    func testUAX17IndicConjunctDoesNotMatchItsConsonantPrefixInOneRead() {
         let conjunct = "\u{0915}\u{094D}\u{0924}"
         let prefix = "\u{0915}"
-        XCTAssertFalse(conjunct.contains(prefix))
         XCTAssertTrue(matchEvents(for: conjunct, keywords: [prefix], splitByScalar: false).isEmpty)
     }
 
-    func testIndicConjunctKeywordMatchesMyanmarGB9cClusterInOneAndScalarReads() {
+    func testUAX17MyanmarGB9cClusterMatchesInOneAndScalarReads() {
         let conjunct = "\u{1019}\u{1039}\u{1018}"
 
         for splitByScalar in [false, true] {
@@ -413,9 +412,22 @@ final class OutputPipelineTests: XCTestCase {
         }
     }
 
-    func testGB11PositiveEmojiZWJKeywordMatchesInOneAndScalarReads() {
+    func testUAX17MyanmarGB9cClusterDoesNotMatchHostSwiftSubranges() {
+        let cluster = "\u{1019}\u{1039}\u{1018}"
+        let firstHostSwiftSubrange = "\u{1019}\u{1039}"
+        let secondHostSwiftSubrange = "\u{1018}"
+
+        XCTAssertTrue(
+            matchEvents(
+                for: cluster,
+                keywords: [firstHostSwiftSubrange, secondHostSwiftSubrange],
+                splitByScalar: false
+            ).isEmpty
+        )
+    }
+
+    func testUAX17GB11PositiveEmojiZWJKeywordMatchesInOneAndScalarReads() {
         let emoji = "👩\u{200D}💻"
-        XCTAssertEqual(emoji.count, 1)
 
         for splitByScalar in [false, true] {
             let events = matchEvents(for: emoji, keywords: [emoji], splitByScalar: splitByScalar)
@@ -424,11 +436,9 @@ final class OutputPipelineTests: XCTestCase {
         }
     }
 
-    func testGB11PostZWJExtendBreaksBeforeEmojiInOneAndScalarReads() {
+    func testUAX17GB11PostZWJExtendBreaksBeforeEmojiInOneAndScalarReads() {
         let line = "👩\u{200D}\u{0301}💻"
         let laptop = "💻"
-        XCTAssertEqual(line.count, 2)
-        XCTAssertTrue(line.contains(laptop))
 
         for splitByScalar in [false, true] {
             let events = matchEvents(for: line, keywords: [laptop], splitByScalar: splitByScalar)
@@ -450,6 +460,10 @@ final class OutputPipelineTests: XCTestCase {
 
     private func matches(for line: String, keywords: [String], splitByScalar: Bool) -> [String] {
         matchEvents(for: line, keywords: keywords, splitByScalar: splitByScalar).map(\.keyword)
+    }
+
+    private func hasSameScalars(_ lhs: String, as rhs: String) -> Bool {
+        lhs.unicodeScalars.elementsEqual(rhs.unicodeScalars)
     }
 
     private func matchEvents(for line: String, keywords: [String], splitByScalar: Bool) -> [KeywordMatchEvent] {
