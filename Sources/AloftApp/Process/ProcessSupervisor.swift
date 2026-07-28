@@ -31,6 +31,7 @@ actor ProcessSupervisor {
     typealias OutputHandler = @Sendable (Data) -> Void
 
     private struct Record {
+        let generation: UUID
         let entryID: UUID
         var pid: pid_t?
         var processGroupID: pid_t?
@@ -51,7 +52,36 @@ actor ProcessSupervisor {
         }
     }
 
+    private struct CapturedProcess {
+        let generation: UUID
+        let entryID: UUID
+        let pid: pid_t
+        let processGroupID: pid_t
+        let launchedAt: Date?
+        var exitResult: ChildWaitResult?
+        let managedProcess: ManagedProcess
+
+        func snapshot(
+            liveness: ProcessLiveness,
+            includesIdentity: Bool = true
+        ) -> ProcessSnapshot {
+            ProcessSnapshot(
+                entryID: entryID,
+                pid: includesIdentity ? pid : nil,
+                processGroupID: includesIdentity ? processGroupID : nil,
+                liveness: liveness,
+                launchedAt: launchedAt,
+                exitResult: exitResult
+            )
+        }
+    }
+
+    private let probeInterval: Duration
     private var records: [UUID: Record] = [:]
+
+    init(probeInterval: Duration = .milliseconds(50)) {
+        self.probeInterval = probeInterval
+    }
 
     func start(
         entry: CommandEntry,
@@ -73,6 +103,7 @@ actor ProcessSupervisor {
             onOutput: onOutput
         )
         let record = Record(
+            generation: UUID(),
             entryID: entry.id,
             pid: launched.pid,
             processGroupID: launched.processGroupID,
@@ -93,11 +124,23 @@ actor ProcessSupervisor {
         entryID: UUID,
         timeout: Duration = .seconds(5)
     ) async throws -> StopResult {
-        var snapshot = try refreshRecord(entryID: entryID)
+        let snapshot = try refreshRecord(entryID: entryID)
         guard snapshot.liveness == .running,
-              let processGroupID = snapshot.processGroupID else {
+              let record = records[entryID],
+              let pid = record.pid,
+              let processGroupID = record.processGroupID,
+              let managedProcess = record.managedProcess else {
             return .alreadyStopped
         }
+        var captured = CapturedProcess(
+            generation: record.generation,
+            entryID: entryID,
+            pid: pid,
+            processGroupID: processGroupID,
+            launchedAt: record.launchedAt,
+            exitResult: record.exitResult,
+            managedProcess: managedProcess
+        )
 
         do {
             try ProcessLauncher.signalProcessGroup(
@@ -106,8 +149,8 @@ actor ProcessSupervisor {
             )
         } catch let error as NSError
             where error.domain == NSPOSIXErrorDomain && error.code == ESRCH {
-            snapshot = try refreshRecord(entryID: entryID)
-            if snapshot.liveness == .stopped {
+            let refreshed = try refreshCapturedProcess(&captured)
+            if refreshed.liveness == .stopped {
                 return .stopped
             }
             throw error
@@ -117,17 +160,17 @@ actor ProcessSupervisor {
         let deadline = clock.now.advanced(by: timeout)
 
         while true {
-            snapshot = try refreshRecord(entryID: entryID)
-            if snapshot.liveness == .stopped {
+            let refreshed = try refreshCapturedProcess(&captured)
+            if refreshed.liveness == .stopped {
                 return .stopped
             }
 
             let now = clock.now
             if now >= deadline {
-                return .timedOut(snapshot)
+                return .timedOut(refreshed)
             }
 
-            let nextProbe = now.advanced(by: .milliseconds(50))
+            let nextProbe = now.advanced(by: probeInterval)
             try await clock.sleep(
                 until: min(nextProbe, deadline),
                 tolerance: .zero
@@ -165,12 +208,10 @@ actor ProcessSupervisor {
             return record.snapshot
         }
 
-        if record.exitResult == nil {
-            let waitResult = try ProcessLauncher.wait(pid: pid, noHang: true)
-            if waitResult != .running {
-                record.exitResult = waitResult
-            }
-        }
+        record.exitResult = try waitForLeader(
+            pid: pid,
+            existingResult: record.exitResult
+        )
 
         if try ProcessLauncher.processGroupExists(processGroupID) {
             record.liveness = .running
@@ -184,5 +225,65 @@ actor ProcessSupervisor {
 
         records[entryID] = record
         return record.snapshot
+    }
+
+    private func refreshCapturedProcess(
+        _ captured: inout CapturedProcess
+    ) throws -> ProcessSnapshot {
+        captured.exitResult = try waitForLeader(
+            pid: captured.pid,
+            existingResult: captured.exitResult
+        )
+
+        if try ProcessLauncher.processGroupExists(captured.processGroupID) {
+            updateCurrentRecord(from: captured, liveness: .running)
+            return captured.snapshot(liveness: .running)
+        }
+
+        captured.managedProcess.close()
+        updateCurrentRecord(from: captured, liveness: .stopped)
+        return captured.snapshot(
+            liveness: .stopped,
+            includesIdentity: false
+        )
+    }
+
+    private func updateCurrentRecord(
+        from captured: CapturedProcess,
+        liveness: ProcessLiveness
+    ) {
+        guard var record = records[captured.entryID],
+              record.generation == captured.generation,
+              record.pid == captured.pid,
+              record.processGroupID == captured.processGroupID,
+              record.managedProcess === captured.managedProcess else {
+            return
+        }
+
+        record.exitResult = captured.exitResult
+        record.liveness = liveness
+        if liveness == .stopped {
+            record.managedProcess = nil
+            record.pid = nil
+            record.processGroupID = nil
+        }
+        records[captured.entryID] = record
+    }
+
+    private func waitForLeader(
+        pid: pid_t,
+        existingResult: ChildWaitResult?
+    ) throws -> ChildWaitResult? {
+        guard existingResult == nil else {
+            return existingResult
+        }
+
+        do {
+            let result = try ProcessLauncher.wait(pid: pid, noHang: true)
+            return result == .running ? nil : result
+        } catch let error as NSError
+            where error.domain == NSPOSIXErrorDomain && error.code == ECHILD {
+            return nil
+        }
     }
 }

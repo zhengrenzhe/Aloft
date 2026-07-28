@@ -153,8 +153,6 @@ final class ProcessSupervisorTests: XCTestCase {
             timeout: .seconds(2)
         )
         XCTAssertTrue(receivedInitialHeartbeat)
-        let byteCountBeforeStop = await recorder.byteCount
-
         let result = try await supervisor.stop(
             entryID: entry.id,
             timeout: .milliseconds(200)
@@ -168,8 +166,9 @@ final class ProcessSupervisorTests: XCTestCase {
         XCTAssertEqual(snapshot.liveness, .running)
         XCTAssertTrue(try ProcessLauncher.processGroupExists(pgid))
         XCTAssertTrue(processExists(pid))
+        let byteCountAfterTimeout = await recorder.byteCount
         let receivedOutputAfterTimeout = await recorder.waitForMoreData(
-            than: byteCountBeforeStop,
+            than: byteCountAfterTimeout,
             timeout: .seconds(2)
         )
         XCTAssertTrue(
@@ -314,6 +313,249 @@ final class ProcessSupervisorTests: XCTestCase {
         let allSnapshots = try await supervisor.snapshots()
         XCTAssertEqual(allSnapshots[stoppedEntry.id], stopped)
     }
+
+    func testStopUsesCapturedGenerationWhenReplacementStartsDuringAwait() async throws {
+        let supervisor = ProcessSupervisor(
+            probeInterval: .seconds(1)
+        )
+        let oldRecorder = DataRecorder()
+        let newRecorder = DataRecorder()
+        let entryID = UUID()
+        let oldEntry = fixtureEntry(
+            id: entryID,
+            command: "trap '' TERM; "
+                + "/bin/sh -c 'trap - TERM; exec sleep 30' & child=$!; "
+                + "echo stop_child_pid=$child; echo OLD_STOP_READY; "
+                + "wait $child; echo OLD_STOP_TERM_OBSERVED; "
+                + "while true; do :; done"
+        )
+
+        let old = try await supervisor.start(entry: oldEntry) { data in
+            Task { await oldRecorder.append(data) }
+        }
+        let oldPID = try XCTUnwrap(old.pid)
+        let oldPGID = try XCTUnwrap(old.processGroupID)
+        defer { cleanupProcessGroup(pid: oldPID, pgid: oldPGID) }
+        let oldReady = await oldRecorder.waitForText(
+            "OLD_STOP_READY",
+            timeout: .seconds(2)
+        )
+        XCTAssertTrue(oldReady)
+        let childReady = await oldRecorder.waitForText(
+            "stop_child_pid=",
+            timeout: .seconds(2)
+        )
+        XCTAssertTrue(childReady)
+        let recordedChildPID = await oldRecorder.pid(after: "stop_child_pid=")
+        let termSensitiveChildPID = try XCTUnwrap(recordedChildPID)
+        XCTAssertTrue(processExists(termSensitiveChildPID))
+
+        let stopTask = Task {
+            try await supervisor.stop(
+                entryID: entryID,
+                timeout: .seconds(2)
+            )
+        }
+        defer { stopTask.cancel() }
+        let oldObservedTerm = await oldRecorder.waitForText(
+            "OLD_STOP_TERM_OBSERVED",
+            timeout: .seconds(2)
+        )
+        XCTAssertTrue(oldObservedTerm)
+        XCTAssertFalse(processExists(termSensitiveChildPID))
+
+        XCTAssertEqual(Darwin.killpg(oldPGID, SIGKILL), 0)
+        let oldStopped = try await waitForSnapshot(
+            supervisor: supervisor,
+            entryID: entryID,
+            timeout: .milliseconds(500)
+        ) {
+            $0.liveness == .stopped
+        }
+        XCTAssertEqual(oldStopped.liveness, .stopped)
+        let newEntry = fixtureEntry(
+            id: entryID,
+            command: "echo NEW_STOP_READY; exec sleep 30"
+        )
+        let replacement = try await supervisor.start(entry: newEntry) { data in
+            Task { await newRecorder.append(data) }
+        }
+        let replacementPID = try XCTUnwrap(replacement.pid)
+        let replacementPGID = try XCTUnwrap(replacement.processGroupID)
+        defer {
+            cleanupProcessGroup(
+                pid: replacementPID,
+                pgid: replacementPGID
+            )
+        }
+        let replacementReady = await newRecorder.waitForText(
+            "NEW_STOP_READY",
+            timeout: .seconds(2)
+        )
+        XCTAssertTrue(replacementReady)
+
+        let stopResult = try await stopTask.value
+        XCTAssertEqual(stopResult, .stopped)
+        XCTAssertTrue(try ProcessLauncher.processGroupExists(replacementPGID))
+        let current = try await supervisor.refresh(entryID: entryID)
+        XCTAssertEqual(current.pid, replacementPID)
+        XCTAssertEqual(current.processGroupID, replacementPGID)
+        XCTAssertEqual(current.liveness, .running)
+    }
+
+    func testRestartDoesNotConsumeReplacementGenerationDuringAwait() async throws {
+        let supervisor = ProcessSupervisor(
+            probeInterval: .seconds(1)
+        )
+        let oldRecorder = DataRecorder()
+        let newRecorder = DataRecorder()
+        let entryID = UUID()
+        let oldEntry = fixtureEntry(
+            id: entryID,
+            command: "trap '' TERM; "
+                + "/bin/sh -c 'trap - TERM; exec sleep 30' & child=$!; "
+                + "echo restart_child_pid=$child; echo OLD_RESTART_READY; "
+                + "wait $child; echo OLD_RESTART_TERM_OBSERVED; "
+                + "while true; do :; done"
+        )
+
+        let old = try await supervisor.start(entry: oldEntry) { data in
+            Task { await oldRecorder.append(data) }
+        }
+        let oldPID = try XCTUnwrap(old.pid)
+        let oldPGID = try XCTUnwrap(old.processGroupID)
+        defer { cleanupProcessGroup(pid: oldPID, pgid: oldPGID) }
+        let oldReady = await oldRecorder.waitForText(
+            "OLD_RESTART_READY",
+            timeout: .seconds(2)
+        )
+        XCTAssertTrue(oldReady)
+        let childReady = await oldRecorder.waitForText(
+            "restart_child_pid=",
+            timeout: .seconds(2)
+        )
+        XCTAssertTrue(childReady)
+        let recordedChildPID = await oldRecorder.pid(
+            after: "restart_child_pid="
+        )
+        let termSensitiveChildPID = try XCTUnwrap(recordedChildPID)
+        XCTAssertTrue(processExists(termSensitiveChildPID))
+
+        let restartTask = Task {
+            try await supervisor.restart(
+                entry: fixtureEntry(
+                    id: entryID,
+                    command: "echo RESTART_TASK_LAUNCHED; exec sleep 30"
+                ),
+                onOutput: { _ in },
+                timeout: .seconds(2)
+            )
+        }
+        defer { restartTask.cancel() }
+        let oldObservedTerm = await oldRecorder.waitForText(
+            "OLD_RESTART_TERM_OBSERVED",
+            timeout: .seconds(2)
+        )
+        XCTAssertTrue(oldObservedTerm)
+        XCTAssertFalse(processExists(termSensitiveChildPID))
+
+        XCTAssertEqual(Darwin.killpg(oldPGID, SIGKILL), 0)
+        let oldStopped = try await waitForSnapshot(
+            supervisor: supervisor,
+            entryID: entryID,
+            timeout: .milliseconds(500)
+        ) {
+            $0.liveness == .stopped
+        }
+        XCTAssertEqual(oldStopped.liveness, .stopped)
+        let replacement = try await supervisor.start(
+            entry: fixtureEntry(
+                id: entryID,
+                command: "echo NEW_RESTART_READY; exec sleep 30"
+            )
+        ) { data in
+            Task { await newRecorder.append(data) }
+        }
+        let replacementPID = try XCTUnwrap(replacement.pid)
+        let replacementPGID = try XCTUnwrap(replacement.processGroupID)
+        defer {
+            cleanupProcessGroup(
+                pid: replacementPID,
+                pgid: replacementPGID
+            )
+        }
+        let replacementReady = await newRecorder.waitForText(
+            "NEW_RESTART_READY",
+            timeout: .seconds(2)
+        )
+        XCTAssertTrue(replacementReady)
+
+        do {
+            _ = try await restartTask.value
+            XCTFail("Restart must not replace a concurrent generation")
+        } catch let error as ProcessSupervisorError {
+            XCTAssertEqual(error, .alreadyRunning)
+        }
+        XCTAssertTrue(try ProcessLauncher.processGroupExists(replacementPGID))
+        let current = try await supervisor.refresh(entryID: entryID)
+        XCTAssertEqual(current.pid, replacementPID)
+        XCTAssertEqual(current.processGroupID, replacementPGID)
+    }
+
+    func testRefreshAndStopProbeGroupAfterLeaderWasExternallyReaped() async throws {
+        let supervisor = ProcessSupervisor()
+        let recorder = DataRecorder()
+        let entry = fixtureEntry(
+            command: #"trap 'exit 7' USR1; "#
+                + #"/bin/sh -c 'trap "" HUP; "#
+                + #"printf "child_pid=%d EXTERNAL_REAP_READY\n" "$$"; "#
+                + #"kill -USR1 "$PPID"; exec sleep 30' & wait"#
+        )
+
+        let started = try await supervisor.start(entry: entry) { data in
+            Task { await recorder.append(data) }
+        }
+        let pid = try XCTUnwrap(started.pid)
+        let pgid = try XCTUnwrap(started.processGroupID)
+        defer { cleanupProcessGroup(pid: pid, pgid: pgid) }
+        let descendantReady = await recorder.waitForText(
+            "EXTERNAL_REAP_READY",
+            timeout: .seconds(2)
+        )
+        XCTAssertTrue(descendantReady)
+        let recordedBackgroundPID = await recorder.pid(after: "child_pid=")
+        let backgroundPID = try XCTUnwrap(recordedBackgroundPID)
+        XCTAssertTrue(
+            externallyReapLeader(pid: pid, timeout: .seconds(2))
+        )
+        XCTAssertTrue(processExists(backgroundPID))
+        XCTAssertEqual(Darwin.getpgid(backgroundPID), pgid)
+
+        let refreshed = try await supervisor.refresh(entryID: entry.id)
+        XCTAssertEqual(refreshed.liveness, .running)
+        XCTAssertEqual(refreshed.pid, pid)
+        XCTAssertEqual(refreshed.processGroupID, pgid)
+        XCTAssertNil(refreshed.exitResult)
+
+        let stopResult = try await supervisor.stop(
+            entryID: entry.id,
+            timeout: .seconds(2)
+        )
+        XCTAssertEqual(stopResult, .stopped)
+        XCTAssertFalse(try ProcessLauncher.processGroupExists(pgid))
+        XCTAssertFalse(processExists(backgroundPID))
+    }
+
+    func testStopWithZeroTimeoutReturnsLiveCapturedSnapshot() async throws {
+        try await assertImmediateStopTimeout(.zero, marker: "ZERO_TIMEOUT_READY")
+    }
+
+    func testStopWithNegativeTimeoutReturnsLiveCapturedSnapshot() async throws {
+        try await assertImmediateStopTimeout(
+            .milliseconds(-1),
+            marker: "NEGATIVE_TIMEOUT_READY"
+        )
+    }
 }
 
 private actor DataRecorder {
@@ -365,15 +607,71 @@ private actor DataRecorder {
     }
 }
 
-private func fixtureEntry(command: String) -> CommandEntry {
+private func fixtureEntry(
+    id: UUID = UUID(),
+    command: String
+) -> CommandEntry {
     CommandEntry(
-        id: UUID(),
+        id: id,
         name: "Fixture",
         cwd: "/tmp",
         command: command,
         keywords: ["fixture"],
         order: 0
     )
+}
+
+private func assertImmediateStopTimeout(
+    _ timeout: Duration,
+    marker: String
+) async throws {
+    let supervisor = ProcessSupervisor()
+    let recorder = DataRecorder()
+    let entry = fixtureEntry(
+        command: "trap '' TERM; echo \(marker); "
+            + "while true; do sleep 30; done"
+    )
+    let started = try await supervisor.start(entry: entry) { data in
+        Task { await recorder.append(data) }
+    }
+    let pid = try XCTUnwrap(started.pid)
+    let pgid = try XCTUnwrap(started.processGroupID)
+    defer { cleanupProcessGroup(pid: pid, pgid: pgid) }
+    let receivedReady = await recorder.waitForText(
+        marker,
+        timeout: .seconds(2)
+    )
+    XCTAssertTrue(receivedReady)
+
+    let result = try await supervisor.stop(
+        entryID: entry.id,
+        timeout: timeout
+    )
+    guard case let .timedOut(snapshot) = result else {
+        return XCTFail("Expected immediate timeout, got \(result)")
+    }
+    XCTAssertEqual(snapshot.pid, pid)
+    XCTAssertEqual(snapshot.processGroupID, pgid)
+    XCTAssertEqual(snapshot.liveness, .running)
+    XCTAssertTrue(try ProcessLauncher.processGroupExists(pgid))
+}
+
+private func externallyReapLeader(pid: pid_t, timeout: Duration) -> Bool {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+
+    while clock.now < deadline {
+        var status: Int32 = 0
+        let result = Darwin.waitpid(pid, &status, WNOHANG)
+        if result == pid {
+            return true
+        }
+        if result == -1 && errno != EINTR {
+            return false
+        }
+        usleep(10_000)
+    }
+    return false
 }
 
 private func waitForSnapshot(
