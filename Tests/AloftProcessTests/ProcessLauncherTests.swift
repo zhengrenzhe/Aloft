@@ -28,9 +28,9 @@ final class ProcessLauncherTests: XCTestCase {
 
     func testKernelProbeAndSIGTERMAffectWholeGroup() throws {
         let process = try ProcessLauncher.launch(
-            command: "(trap '' HUP; exec sleep 30) & child_pid=$!; "
-                + "printf 'child_pid=%d ALOFT_CHILD_READY\\n' \"$child_pid\"; "
-                + "exec sleep 30",
+            command: #"/bin/sh -c 'trap "" HUP; "#
+                + #"printf "child_pid=%d ALOFT_CHILD_READY\n" "$$"; "#
+                + #"exec sleep 30' & exec sleep 30"#,
             cwd: "/tmp"
         )
         var backgroundPID: pid_t?
