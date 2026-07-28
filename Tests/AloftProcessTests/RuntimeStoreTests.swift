@@ -1,0 +1,471 @@
+import Darwin
+import Foundation
+import XCTest
+@testable import AloftApp
+
+@MainActor
+final class RuntimeStoreTests: XCTestCase {
+    func testStartAllStreamsIndependentOutputAndStopAllStopsEveryGroup() async throws {
+        let runtime = RuntimeStore(supervisor: ProcessSupervisor())
+        let entries = [
+            fixtureEntry(name: "One", command: "echo one; exec sleep 30"),
+            fixtureEntry(name: "Two", command: "echo two; exec sleep 30"),
+        ]
+        var identities: [(pid: pid_t, pgid: pid_t)] = []
+        defer { identities.forEach(cleanupRuntimeProcess) }
+
+        let startResults = await runtime.startAll(entries)
+        identities = entries.compactMap {
+            let process = runtime.runtime(for: $0.id).process
+            guard let pid = process.pid,
+                  let pgid = process.processGroupID else {
+                return nil
+            }
+            return (pid, pgid)
+        }
+
+        XCTAssertEqual(startResults.map(\.entryID), entries.map(\.id))
+        XCTAssertEqual(startResults.filter(\.isSuccess).count, 2)
+        let receivedIndependentOutput = await waitUntilMainActor(
+            timeout: .seconds(2)
+        ) {
+            runtime.runtime(for: entries[0].id)
+                .output.displayText.contains("one")
+                && runtime.runtime(for: entries[1].id)
+                .output.displayText.contains("two")
+        }
+        XCTAssertTrue(receivedIndependentOutput)
+
+        let stopResults = await runtime.stopAll(
+            entries,
+            timeout: .seconds(2)
+        )
+
+        XCTAssertEqual(stopResults.map(\.entryID), entries.map(\.id))
+        XCTAssertEqual(stopResults.filter(\.isSuccess).count, 2)
+        XCTAssertTrue(runtime.liveEntryIDs.isEmpty)
+        for identity in identities {
+            XCTAssertFalse(
+                try ProcessLauncher.processGroupExists(identity.pgid)
+            )
+        }
+    }
+
+    func testGroupActionReturnsSuccessAndFailureWithoutSkippingEntries() async throws {
+        let runtime = RuntimeStore(supervisor: ProcessSupervisor())
+        let valid = fixtureEntry(
+            name: "Valid",
+            command: "echo VALID_READY; exec sleep 30"
+        )
+        let invalid = fixtureEntry(
+            name: "Invalid",
+            cwd: "/path/that/does/not/exist",
+            command: "exec sleep 30"
+        )
+        var identity: (pid: pid_t, pgid: pid_t)?
+        defer {
+            if let identity {
+                cleanupRuntimeProcess(identity)
+            }
+        }
+
+        let results = await runtime.startAll([valid, invalid])
+        let process = runtime.runtime(for: valid.id).process
+        if let pid = process.pid, let pgid = process.processGroupID {
+            identity = (pid, pgid)
+        }
+
+        XCTAssertEqual(results.map(\.entryID), [valid.id, invalid.id])
+        XCTAssertTrue(results[0].isSuccess)
+        XCTAssertFalse(results[1].isSuccess)
+        XCTAssertNotNil(
+            runtime.runtime(for: invalid.id).lastError
+        )
+        XCTAssertTrue(runtime.liveEntryIDs.contains(valid.id))
+        XCTAssertFalse(runtime.liveEntryIDs.contains(invalid.id))
+
+        let stop = await runtime.stop(valid, timeout: .seconds(2))
+        XCTAssertTrue(stop.isSuccess)
+    }
+
+    func testRestartRetainsOutputAddsSessionSeparatorAndProjectsLatestMatch() async throws {
+        let runtime = RuntimeStore(supervisor: ProcessSupervisor())
+        let entryID = UUID()
+        let firstEntry = fixtureEntry(
+            id: entryID,
+            name: "Matcher",
+            command: "echo FIRST_READY; exec sleep 30",
+            keywords: ["FIRST_READY"]
+        )
+        let secondEntry = fixtureEntry(
+            id: entryID,
+            name: "Matcher",
+            command: "echo SECOND_READY; exec sleep 30",
+            keywords: ["SECOND_READY"]
+        )
+        var identities: [(pid: pid_t, pgid: pid_t)] = []
+        defer { identities.forEach(cleanupRuntimeProcess) }
+
+        let firstResult = await runtime.start(firstEntry)
+        let first = runtime.runtime(for: entryID).process
+        identities.append(
+            (
+                try XCTUnwrap(first.pid),
+                try XCTUnwrap(first.processGroupID)
+            )
+        )
+        XCTAssertTrue(firstResult.isSuccess)
+        let receivedFirstMatch = await waitUntilMainActor(
+            timeout: .seconds(2)
+        ) {
+            runtime.latestGlobalMatch?.entryID == entryID
+                && runtime.latestGlobalMatch?.keyword == "FIRST_READY"
+        }
+        XCTAssertTrue(receivedFirstMatch)
+
+        let restartResult = await runtime.restart(
+            secondEntry,
+            timeout: .seconds(2)
+        )
+        let second = runtime.runtime(for: entryID).process
+        identities.append(
+            (
+                try XCTUnwrap(second.pid),
+                try XCTUnwrap(second.processGroupID)
+            )
+        )
+        XCTAssertTrue(restartResult.isSuccess)
+        XCTAssertNotEqual(first.processGroupID, second.processGroupID)
+        let receivedSecondSession = await waitUntilMainActor(
+            timeout: .seconds(2)
+        ) {
+            runtime.runtime(for: entryID)
+                .output.displayText.contains("FIRST_READY")
+                && runtime.runtime(for: entryID)
+                .output.displayText.contains("SECOND_READY")
+                && runtime.latestGlobalMatch?.keyword == "SECOND_READY"
+        }
+        XCTAssertTrue(receivedSecondSession)
+        XCTAssertEqual(
+            occurrences(
+                of: "Session started",
+                in: runtime.runtime(for: entryID).output.displayText
+            ),
+            2
+        )
+
+        runtime.clearOutput(entryID: entryID)
+
+        XCTAssertEqual(
+            runtime.runtime(for: entryID).output,
+            OutputSnapshot(
+                committedLines: [],
+                currentLine: "",
+                latestMatch: nil
+            )
+        )
+        XCTAssertNil(runtime.latestGlobalMatch)
+        XCTAssertEqual(
+            runtime.runtime(for: entryID).process.processGroupID,
+            second.processGroupID
+        )
+
+        let stop = await runtime.stop(secondEntry, timeout: .seconds(2))
+        XCTAssertTrue(stop.isSuccess)
+    }
+
+    func testRestartAllReturnsEveryEntryWithFreshProcessGroups() async throws {
+        let runtime = RuntimeStore(supervisor: ProcessSupervisor())
+        let entries = [
+            fixtureEntry(name: "One", command: "exec sleep 30"),
+            fixtureEntry(name: "Two", command: "exec sleep 30"),
+        ]
+        var identities: [(pid: pid_t, pgid: pid_t)] = []
+        defer { identities.forEach(cleanupRuntimeProcess) }
+
+        let starts = await runtime.startAll(entries)
+        XCTAssertEqual(starts.filter(\.isSuccess).count, 2)
+        let firstIdentities = try entries.map { entry in
+            let process = runtime.runtime(for: entry.id).process
+            return (
+                pid: try XCTUnwrap(process.pid),
+                pgid: try XCTUnwrap(process.processGroupID)
+            )
+        }
+        identities.append(contentsOf: firstIdentities)
+
+        let restarts = await runtime.restartAll(
+            entries,
+            timeout: .seconds(2)
+        )
+        XCTAssertEqual(restarts.map(\.entryID), entries.map(\.id))
+        XCTAssertEqual(restarts.filter(\.isSuccess).count, 2)
+
+        let secondIdentities = try entries.map { entry in
+            let process = runtime.runtime(for: entry.id).process
+            return (
+                pid: try XCTUnwrap(process.pid),
+                pgid: try XCTUnwrap(process.processGroupID)
+            )
+        }
+        identities.append(contentsOf: secondIdentities)
+        XCTAssertEqual(Set(firstIdentities.map(\.pgid)).count, 2)
+        XCTAssertEqual(Set(secondIdentities.map(\.pgid)).count, 2)
+        XCTAssertTrue(
+            Set(firstIdentities.map(\.pgid))
+                .isDisjoint(with: Set(secondIdentities.map(\.pgid)))
+        )
+        for identity in firstIdentities {
+            XCTAssertFalse(
+                try ProcessLauncher.processGroupExists(identity.pgid)
+            )
+        }
+
+        let stops = await runtime.stopAll(entries, timeout: .seconds(2))
+        XCTAssertEqual(stops.filter(\.isSuccess).count, 2)
+        XCTAssertTrue(runtime.liveEntryIDs.isEmpty)
+    }
+
+    func testMonitoringReplacesRunningProjectionWithFreshKernelProbe() async throws {
+        let runtime = RuntimeStore(supervisor: ProcessSupervisor())
+        let entry = fixtureEntry(
+            name: "Short",
+            command: "exec sleep 0.1"
+        )
+        let result = await runtime.start(entry)
+        let started = runtime.runtime(for: entry.id).process
+        let pid = try XCTUnwrap(started.pid)
+        let pgid = try XCTUnwrap(started.processGroupID)
+        defer { cleanupRuntimeProcess((pid, pgid)) }
+
+        XCTAssertTrue(result.isSuccess)
+        XCTAssertEqual(started.liveness, .running)
+        let observedNaturalExit = await waitUntilMainActor(
+            timeout: .seconds(2)
+        ) {
+            runtime.runtime(for: entry.id).process.liveness == .stopped
+        }
+        XCTAssertTrue(observedNaturalExit)
+
+        let refreshed = runtime.runtime(for: entry.id).process
+        XCTAssertEqual(refreshed.exitResult, .exited(code: 0))
+        XCTAssertNil(refreshed.pid)
+        XCTAssertNil(refreshed.processGroupID)
+        XCTAssertTrue(runtime.liveEntryIDs.isEmpty)
+    }
+
+    func testTerminationReturnsEverySIGTERMResistantEntryAndPGID() async throws {
+        let runtime = RuntimeStore(supervisor: ProcessSupervisor())
+        let entries = [
+            fixtureEntry(
+                name: "One",
+                command: "trap '' TERM; echo TERM_READY_ONE; exec sleep 30"
+            ),
+            fixtureEntry(
+                name: "Two",
+                command: "trap '' TERM; echo TERM_READY_TWO; exec sleep 30"
+            ),
+        ]
+        var identities: [(entryID: UUID, pid: pid_t, pgid: pid_t)] = []
+        defer {
+            identities.forEach {
+                cleanupRuntimeProcess(($0.pid, $0.pgid))
+            }
+        }
+
+        let starts = await runtime.startAll(entries)
+        XCTAssertEqual(starts.filter(\.isSuccess).count, 2)
+        identities = try entries.map { entry in
+            let process = runtime.runtime(for: entry.id).process
+            return (
+                entry.id,
+                try XCTUnwrap(process.pid),
+                try XCTUnwrap(process.processGroupID)
+            )
+        }
+        let trapsReady = await waitUntilMainActor(timeout: .seconds(2)) {
+            runtime.runtime(for: entries[0].id)
+                .output.displayText.contains("TERM_READY_ONE")
+                && runtime.runtime(for: entries[1].id)
+                .output.displayText.contains("TERM_READY_TWO")
+        }
+        XCTAssertTrue(trapsReady)
+        for identity in identities {
+            let didExec = try await waitForExecutableName(
+                pid: identity.pid,
+                name: "sleep",
+                timeout: .seconds(2)
+            )
+            XCTAssertTrue(didExec)
+        }
+
+        let result = await TerminationCoordinator(runtimeStore: runtime)
+            .stopAllForTermination(timeout: .milliseconds(200))
+
+        let expected = identities
+            .map { RemainingProcess(entryID: $0.entryID, processGroupID: $0.pgid) }
+            .sorted { $0.entryID.uuidString < $1.entryID.uuidString }
+        XCTAssertEqual(
+            result.remaining.sorted {
+                $0.entryID.uuidString < $1.entryID.uuidString
+            },
+            expected
+        )
+        XCTAssertEqual(runtime.liveEntryIDs, Set(entries.map(\.id)))
+    }
+
+    func testTerminationIsSafeOnlyAfterEveryResponsiveGroupDisappears() async throws {
+        let runtime = RuntimeStore(supervisor: ProcessSupervisor())
+        let entries = [
+            fixtureEntry(name: "One", command: "exec sleep 30"),
+            fixtureEntry(name: "Two", command: "exec sleep 30"),
+        ]
+        var identities: [(pid: pid_t, pgid: pid_t)] = []
+        defer { identities.forEach(cleanupRuntimeProcess) }
+
+        let starts = await runtime.startAll(entries)
+        XCTAssertEqual(starts.filter(\.isSuccess).count, 2)
+        identities = try entries.map {
+            let process = runtime.runtime(for: $0.id).process
+            return (
+                try XCTUnwrap(process.pid),
+                try XCTUnwrap(process.processGroupID)
+            )
+        }
+        for identity in identities {
+            let didExec = try await waitForExecutableName(
+                pid: identity.pid,
+                name: "sleep",
+                timeout: .seconds(2)
+            )
+            XCTAssertTrue(didExec)
+        }
+
+        let result = await TerminationCoordinator(runtimeStore: runtime)
+            .stopAllForTermination(timeout: .seconds(2))
+
+        XCTAssertEqual(result, .safeToTerminate)
+        XCTAssertTrue(runtime.liveEntryIDs.isEmpty)
+        for identity in identities {
+            XCTAssertFalse(
+                try ProcessLauncher.processGroupExists(identity.pgid)
+            )
+        }
+    }
+}
+
+private func fixtureEntry(
+    id: UUID = UUID(),
+    name: String,
+    cwd: String = "/tmp",
+    command: String,
+    keywords: [String] = []
+) -> CommandEntry {
+    CommandEntry(
+        id: id,
+        name: name,
+        cwd: cwd,
+        command: command,
+        keywords: keywords,
+        order: 0
+    )
+}
+
+@MainActor
+private func waitUntilMainActor(
+    timeout: Duration,
+    condition: () -> Bool
+) async -> Bool {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+
+    while clock.now < deadline {
+        if condition() {
+            return true
+        }
+        try? await clock.sleep(for: .milliseconds(10))
+    }
+    return condition()
+}
+
+private func occurrences(of needle: String, in text: String) -> Int {
+    text.components(separatedBy: needle).count - 1
+}
+
+private func waitForExecutableName(
+    pid: pid_t,
+    name: String,
+    timeout: Duration
+) async throws -> Bool {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+
+    while clock.now < deadline {
+        if try executableName(pid: pid) == name {
+            return true
+        }
+        try await clock.sleep(for: .milliseconds(10))
+    }
+    return try executableName(pid: pid) == name
+}
+
+private func executableName(pid: pid_t) throws -> String? {
+    var path = [CChar](repeating: 0, count: 4_096)
+    let length = proc_pidpath(pid, &path, UInt32(path.count))
+    if length > 0 {
+        return path.withUnsafeBufferPointer {
+            URL(fileURLWithPath: String(cString: $0.baseAddress!))
+                .lastPathComponent
+        }
+    }
+    if errno == ESRCH {
+        return nil
+    }
+    throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+}
+
+private func cleanupRuntimeProcess(
+    _ identity: (pid: pid_t, pgid: pid_t)
+) {
+    let killResult = Darwin.killpg(identity.pgid, SIGKILL)
+    let killError = killResult == -1 ? errno : 0
+    XCTAssertTrue(
+        killResult == 0 || (killResult == -1 && killError == ESRCH),
+        "cleanup killpg(\(identity.pgid), SIGKILL) failed with errno \(killError)"
+    )
+
+    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+    var leaderHandled = false
+    while ContinuousClock.now < deadline {
+        var status: Int32 = 0
+        let result = Darwin.waitpid(identity.pid, &status, WNOHANG)
+        if result == identity.pid || (result == -1 && errno == ECHILD) {
+            leaderHandled = true
+            break
+        }
+        if result == -1 && errno != EINTR {
+            XCTFail(
+                "cleanup waitpid(\(identity.pid)) failed with errno \(errno)"
+            )
+            break
+        }
+        usleep(10_000)
+    }
+    XCTAssertTrue(
+        leaderHandled,
+        "cleanup did not reap leader \(identity.pid)"
+    )
+
+    var groupGone = false
+    while ContinuousClock.now < deadline {
+        if Darwin.killpg(identity.pgid, 0) == -1 && errno == ESRCH {
+            groupGone = true
+            break
+        }
+        usleep(10_000)
+    }
+    XCTAssertTrue(
+        groupGone,
+        "cleanup left process group \(identity.pgid)"
+    )
+}
