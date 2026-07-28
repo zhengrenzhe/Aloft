@@ -131,9 +131,10 @@ final class RuntimeStoreConcurrencyTests: XCTestCase {
         let runtime = await makeRuntimeStore(fake)
         let initialStart = await runtime.start(entry)
         XCTAssertTrue(initialStart.isSuccess)
-        await fake.setNextRefreshOverride(
+        await fake.setRefreshOverride(
             stoppedSnapshot(entryID: entry.id),
-            gate: staleRefreshGate
+            gate: staleRefreshGate,
+            call: 1
         )
 
         let staleRefresh = Task {
@@ -163,6 +164,275 @@ final class RuntimeStoreConcurrencyTests: XCTestCase {
         XCTAssertEqual(current.process.processGroupID, 777)
         XCTAssertEqual(current.process.liveness, .running)
         XCTAssertNil(current.lastError)
+    }
+
+    func testOldRunningProbeCannotReviveEntryAfterSuccessfulStop() async throws {
+        let fake = ControlledProcessSupervisor()
+        let oldProbeGate = AsyncTestGate()
+        let entry = concurrencyEntry(name: "Stop Wins")
+        let running = runningSnapshot(
+            entryID: entry.id,
+            pid: 251,
+            processGroupID: 251
+        )
+        await fake.enqueueStartSnapshot(running)
+        await fake.setRefreshOverride(
+            running,
+            gate: oldProbeGate,
+            call: 1
+        )
+        let runtime = await makeRuntimeStore(fake)
+        let start = await runtime.start(entry)
+        XCTAssertTrue(start.isSuccess)
+
+        let oldProbe = Task {
+            await runtime.refreshAll()
+        }
+        let oldProbeEntered = await waitUntilAsync {
+            await fake.refreshCallCount == 1
+        }
+        XCTAssertTrue(oldProbeEntered)
+
+        let stop = await runtime.stop(entry, timeout: .seconds(1))
+        XCTAssertTrue(stop.isSuccess)
+        XCTAssertEqual(
+            runtime.runtime(for: entry.id).process,
+            stoppedSnapshot(entryID: entry.id)
+        )
+
+        await oldProbeGate.open()
+        await oldProbe.value
+
+        let current = runtime.runtime(for: entry.id)
+        XCTAssertEqual(
+            current.process,
+            stoppedSnapshot(entryID: entry.id)
+        )
+        XCTAssertNil(current.lastError)
+    }
+
+    func testOldProbeCannotEraseNewerStopTimeoutProjection() async throws {
+        let fake = ControlledProcessSupervisor()
+        let oldProbeGate = AsyncTestGate()
+        let entry = concurrencyEntry(name: "Timeout Wins")
+        let running = runningSnapshot(
+            entryID: entry.id,
+            pid: 261,
+            processGroupID: 261
+        )
+        let timedOut = ProcessSnapshot(
+            entryID: entry.id,
+            pid: nil,
+            processGroupID: 261,
+            liveness: .running,
+            launchedAt: running.launchedAt,
+            exitResult: .exited(code: 143)
+        )
+        await fake.enqueueStartSnapshot(running)
+        await fake.setRefreshOverride(
+            running,
+            gate: oldProbeGate,
+            call: 1
+        )
+        await fake.setStopBehavior(
+            .timedOut(timedOut),
+            gate: nil,
+            call: 1
+        )
+        let runtime = await makeRuntimeStore(fake)
+        let start = await runtime.start(entry)
+        XCTAssertTrue(start.isSuccess)
+
+        let oldProbe = Task {
+            await runtime.refreshAll()
+        }
+        let oldProbeEntered = await waitUntilAsync {
+            await fake.refreshCallCount == 1
+        }
+        XCTAssertTrue(oldProbeEntered)
+
+        let stop = await runtime.stop(
+            entry,
+            timeout: .milliseconds(50)
+        )
+        XCTAssertFalse(stop.isSuccess)
+        XCTAssertEqual(
+            runtime.runtime(for: entry.id).process,
+            timedOut
+        )
+        XCTAssertEqual(
+            runtime.runtime(for: entry.id).lastError,
+            "Did not stop process group 261."
+        )
+
+        await oldProbeGate.open()
+        await oldProbe.value
+
+        let current = runtime.runtime(for: entry.id)
+        XCTAssertEqual(current.process, timedOut)
+        XCTAssertEqual(
+            current.lastError,
+            "Did not stop process group 261."
+        )
+    }
+
+    func testActionErrorInvalidatesOlderProbe() async throws {
+        let fake = ControlledProcessSupervisor()
+        let oldProbeGate = AsyncTestGate()
+        let entry = concurrencyEntry(name: "Error Wins")
+        let running = runningSnapshot(
+            entryID: entry.id,
+            pid: 266,
+            processGroupID: 266
+        )
+        await fake.enqueueStartSnapshot(running)
+        await fake.setRefreshOverride(
+            stoppedSnapshot(entryID: entry.id),
+            gate: oldProbeGate,
+            call: 1
+        )
+        let runtime = await makeRuntimeStore(fake)
+        let start = await runtime.start(entry)
+        XCTAssertTrue(start.isSuccess)
+
+        let oldProbe = Task {
+            await runtime.refreshAll()
+        }
+        let oldProbeEntered = await waitUntilAsync {
+            await fake.refreshCallCount == 1
+        }
+        XCTAssertTrue(oldProbeEntered)
+
+        let duplicateStart = await runtime.start(entry)
+        XCTAssertFalse(duplicateStart.isSuccess)
+        XCTAssertEqual(
+            runtime.runtime(for: entry.id).process,
+            running
+        )
+        XCTAssertEqual(
+            runtime.runtime(for: entry.id).lastError,
+            "The entry is already running."
+        )
+
+        await oldProbeGate.open()
+        await oldProbe.value
+
+        let current = runtime.runtime(for: entry.id)
+        XCTAssertEqual(current.process, running)
+        XCTAssertEqual(
+            current.lastError,
+            "The entry is already running."
+        )
+    }
+
+    func testLaterIssuedProbeWinsWhenOverlappingProbesReturnInReverseOrder() async throws {
+        let fake = ControlledProcessSupervisor()
+        let olderProbeGate = AsyncTestGate()
+        let entry = concurrencyEntry(name: "Probe Revision")
+        let olderProjection = runningSnapshot(
+            entryID: entry.id,
+            pid: 271,
+            processGroupID: 271
+        )
+        let newerProjection = ProcessSnapshot(
+            entryID: entry.id,
+            pid: 271,
+            processGroupID: 271,
+            liveness: .running,
+            launchedAt: olderProjection.launchedAt,
+            exitResult: .exited(code: 22)
+        )
+        await fake.enqueueStartSnapshot(olderProjection)
+        await fake.setRefreshOverride(
+            olderProjection,
+            gate: olderProbeGate,
+            call: 1
+        )
+        await fake.setRefreshOverride(
+            newerProjection,
+            gate: nil,
+            call: 2
+        )
+        let runtime = await makeRuntimeStore(fake)
+        let start = await runtime.start(entry)
+        XCTAssertTrue(start.isSuccess)
+
+        let olderProbe = Task {
+            await runtime.refreshAll()
+        }
+        let olderProbeEntered = await waitUntilAsync {
+            await fake.refreshCallCount == 1
+        }
+        XCTAssertTrue(olderProbeEntered)
+
+        await runtime.refreshAll()
+        XCTAssertEqual(
+            runtime.runtime(for: entry.id).process,
+            newerProjection
+        )
+
+        await olderProbeGate.open()
+        await olderProbe.value
+
+        XCTAssertEqual(
+            runtime.runtime(for: entry.id).process,
+            newerProjection
+        )
+    }
+
+    func testLaterManagedEnumerationWinsWhenEnumerationsReturnInReverseOrder() async throws {
+        let fake = ControlledProcessSupervisor()
+        let olderEnumerationGate = AsyncTestGate()
+        let entry = concurrencyEntry(name: "Enumeration Revision")
+        let olderProjection = runningSnapshot(
+            entryID: entry.id,
+            pid: 281,
+            processGroupID: 281
+        )
+        let newerProjection = ProcessSnapshot(
+            entryID: entry.id,
+            pid: 281,
+            processGroupID: 281,
+            liveness: .running,
+            launchedAt: olderProjection.launchedAt,
+            exitResult: .exited(code: 23)
+        )
+        await fake.enqueueStartSnapshot(olderProjection)
+        await fake.setSnapshotsOverride(
+            [entry.id: olderProjection],
+            gate: olderEnumerationGate,
+            call: 1
+        )
+        await fake.setSnapshotsOverride(
+            [entry.id: newerProjection],
+            gate: nil,
+            call: 2
+        )
+        let runtime = await makeRuntimeStore(fake)
+        let start = await runtime.start(entry)
+        XCTAssertTrue(start.isSuccess)
+
+        let olderEnumeration = Task {
+            try await runtime.refreshManagedRecords()
+        }
+        let olderEnumerationEntered = await waitUntilAsync {
+            await fake.snapshotsCallCount == 1
+        }
+        XCTAssertTrue(olderEnumerationEntered)
+
+        _ = try await runtime.refreshManagedRecords()
+        XCTAssertEqual(
+            runtime.runtime(for: entry.id).process,
+            newerProjection
+        )
+
+        await olderEnumerationGate.open()
+        _ = try await olderEnumeration.value
+
+        XCTAssertEqual(
+            runtime.runtime(for: entry.id).process,
+            newerProjection
+        )
     }
 
     func testStaleStopTimeoutCannotOverwriteEnumeratedReplacement() async throws {
@@ -314,6 +584,77 @@ final class RuntimeStoreConcurrencyTests: XCTestCase {
         XCTAssertFalse(
             runtime.runtime(for: entry.id)
                 .output.displayText.contains("OLD_SESSION")
+        )
+    }
+
+    func testClearOutputResetsActiveAndBlockedPendingSessions() async throws {
+        let fake = ControlledProcessSupervisor()
+        let pendingStartGate = AsyncTestGate()
+        let entry = concurrencyEntry(
+            name: "Pending Clear",
+            keywords: ["OLD_SESSION", "NEW_OUTPUT"]
+        )
+        await fake.enqueueStartSnapshot(
+            runningSnapshot(
+                entryID: entry.id,
+                pid: 461,
+                processGroupID: 461
+            )
+        )
+        await fake.enqueueStartSnapshot(
+            runningSnapshot(
+                entryID: entry.id,
+                pid: 462,
+                processGroupID: 462
+            )
+        )
+        await fake.setStartGate(pendingStartGate, call: 2)
+        let runtime = await makeRuntimeStore(fake)
+        let firstStart = await runtime.start(entry)
+        XCTAssertTrue(firstStart.isSuccess)
+        await fake.emit(Data("OLD_SESSION\n".utf8), entryID: entry.id)
+        let oldMatchArrived = await waitUntilMainActor {
+            runtime.latestGlobalMatch?.keyword == "OLD_SESSION"
+        }
+        XCTAssertTrue(oldMatchArrived)
+        let stop = await runtime.stop(entry, timeout: .seconds(1))
+        XCTAssertTrue(stop.isSuccess)
+
+        let pendingStart = Task {
+            await runtime.start(entry)
+        }
+        let pendingSessionCreated = await waitUntilAsync {
+            await fake.startCallCount == 2
+        }
+        XCTAssertTrue(pendingSessionCreated)
+
+        runtime.clearOutput(entryID: entry.id)
+        XCTAssertEqual(
+            runtime.runtime(for: entry.id).output,
+            OutputSnapshot(
+                committedLines: [],
+                currentLine: "",
+                latestMatch: nil
+            )
+        )
+        XCTAssertNil(runtime.latestGlobalMatch)
+
+        await pendingStartGate.open()
+        let secondStart = await pendingStart.value
+        XCTAssertTrue(secondStart.isSuccess)
+        await fake.emit(Data("NEW_OUTPUT\n".utf8), entryID: entry.id)
+        let newMatchArrived = await waitUntilMainActor {
+            runtime.latestGlobalMatch?.keyword == "NEW_OUTPUT"
+        }
+        XCTAssertTrue(newMatchArrived)
+
+        let finalOutput = runtime.runtime(for: entry.id).output
+        XCTAssertEqual(finalOutput.committedLines, ["NEW_OUTPUT"])
+        XCTAssertEqual(finalOutput.currentLine, "")
+        XCTAssertEqual(finalOutput.latestMatch?.keyword, "NEW_OUTPUT")
+        XCTAssertEqual(
+            runtime.latestGlobalMatch?.keyword,
+            "NEW_OUTPUT"
         )
     }
 
@@ -548,11 +889,16 @@ private actor ControlledProcessSupervisor {
     private var stopConfigurations: [
         Int: (behavior: StopBehavior, gate: AsyncTestGate?)
     ] = [:]
-    private var nextRefreshOverride: (
-        snapshot: ProcessSnapshot,
-        gate: AsyncTestGate
-    )?
+    private var refreshOverrides: [
+        Int: (snapshot: ProcessSnapshot, gate: AsyncTestGate?)
+    ] = [:]
     private var snapshotsGates: [Int: AsyncTestGate] = [:]
+    private var snapshotsOverrides: [
+        Int: (
+            snapshots: [UUID: ProcessSnapshot],
+            gate: AsyncTestGate?
+        )
+    ] = [:]
 
     private(set) var startCallCount = 0
     private(set) var stopCallCount = 0
@@ -596,15 +942,24 @@ private actor ControlledProcessSupervisor {
         stopConfigurations[call] = (behavior, gate)
     }
 
-    func setNextRefreshOverride(
+    func setRefreshOverride(
         _ snapshot: ProcessSnapshot,
-        gate: AsyncTestGate
+        gate: AsyncTestGate?,
+        call: Int
     ) {
-        nextRefreshOverride = (snapshot, gate)
+        refreshOverrides[call] = (snapshot, gate)
     }
 
     func setSnapshotsGate(_ gate: AsyncTestGate, call: Int) {
         snapshotsGates[call] = gate
+    }
+
+    func setSnapshotsOverride(
+        _ snapshots: [UUID: ProcessSnapshot],
+        gate: AsyncTestGate?,
+        call: Int
+    ) {
+        snapshotsOverrides[call] = (snapshots, gate)
     }
 
     func replaceRecord(_ snapshot: ProcessSnapshot) {
@@ -670,10 +1025,12 @@ private actor ControlledProcessSupervisor {
 
     func refresh(entryID: UUID) async throws -> ProcessSnapshot {
         refreshCallCount += 1
+        let call = refreshCallCount
         events.append("refresh")
-        if let override = nextRefreshOverride {
-            nextRefreshOverride = nil
-            await override.gate.wait()
+        if let override = refreshOverrides[call] {
+            if let gate = override.gate {
+                await gate.wait()
+            }
             return override.snapshot
         }
         guard let snapshot = records[entryID] else {
@@ -685,6 +1042,12 @@ private actor ControlledProcessSupervisor {
     func snapshots() async throws -> [UUID: ProcessSnapshot] {
         snapshotsCallCount += 1
         let call = snapshotsCallCount
+        if let override = snapshotsOverrides[call] {
+            if let gate = override.gate {
+                await gate.wait()
+            }
+            return override.snapshots
+        }
         if let gate = snapshotsGates[call] {
             await gate.wait()
         }
@@ -796,14 +1159,15 @@ private func makeRuntimeStore(
 }
 
 private func concurrencyEntry(
-    name: String
+    name: String,
+    keywords: [String] = []
 ) -> CommandEntry {
     CommandEntry(
         id: UUID(),
         name: name,
         cwd: "/tmp",
         command: "exec sleep 30",
-        keywords: [],
+        keywords: keywords,
         order: 0
     )
 }

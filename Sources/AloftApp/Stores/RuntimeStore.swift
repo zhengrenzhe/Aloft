@@ -129,13 +129,20 @@ final class RuntimeStore {
     private struct ProbeRequest: Sendable {
         let entryID: UUID
         let generation: UUID
+        let projectionRevision: UInt64
     }
 
     private struct ProbeResult: Sendable {
         let entryID: UUID
         let generation: UUID
+        let projectionRevision: UInt64
         let snapshot: ProcessSnapshot?
         let errorDescription: String?
+    }
+
+    private struct ManagedProjectionCapture {
+        let generation: UUID?
+        let projectionRevision: UInt64
     }
 
     private enum GroupAction: Sendable {
@@ -158,6 +165,12 @@ final class RuntimeStore {
 
     @ObservationIgnored
     private var runtimeGenerations: [UUID: UUID] = [:]
+
+    @ObservationIgnored
+    private var projectionRevisions: [UUID: UInt64] = [:]
+
+    @ObservationIgnored
+    private var managedEnumerationRevision: UInt64 = 0
 
     @ObservationIgnored
     private var operationIDs: [UUID: UUID] = [:]
@@ -330,19 +343,22 @@ final class RuntimeStore {
     }
 
     func refreshAll() async {
-        let requests = runtimes.values.compactMap {
-            entryRuntime -> ProbeRequest? in
+        var requests: [ProbeRequest] = []
+        for entryRuntime in runtimes.values {
             guard entryRuntime.process.liveness == .running,
                   entryRuntime.process.processGroupID != nil,
                   let generation = runtimeGenerations[
                     entryRuntime.entryID
                   ] else {
-                return nil
+                continue
             }
-            return ProbeRequest(
+            requests.append(ProbeRequest(
                 entryID: entryRuntime.entryID,
-                generation: generation
-            )
+                generation: generation,
+                projectionRevision: advanceProjectionRevision(
+                    entryID: entryRuntime.entryID
+                )
+            ))
         }
 
         let results = await withTaskGroup(
@@ -355,6 +371,8 @@ final class RuntimeStore {
                         return ProbeResult(
                             entryID: request.entryID,
                             generation: request.generation,
+                            projectionRevision:
+                                request.projectionRevision,
                             snapshot: try await self.processClient.refresh(
                                 entryID: request.entryID
                             ),
@@ -364,6 +382,8 @@ final class RuntimeStore {
                         return ProbeResult(
                             entryID: request.entryID,
                             generation: request.generation,
+                            projectionRevision:
+                                request.projectionRevision,
                             snapshot: nil,
                             errorDescription: describeProcessError(error)
                         )
@@ -380,7 +400,9 @@ final class RuntimeStore {
 
         for result in results {
             guard runtimeGenerations[result.entryID]
-                    == result.generation else {
+                    == result.generation,
+                  projectionRevisions[result.entryID]
+                    == result.projectionRevision else {
                 continue
             }
             let entryRuntime = runtime(for: result.entryID)
@@ -397,14 +419,39 @@ final class RuntimeStore {
     func refreshManagedRecords() async throws -> [
         UUID: ProcessSnapshot
     ] {
-        let capturedGenerations = runtimeGenerations
+        let enumerationRevision = advanceManagedEnumerationRevision()
+        var captures: [UUID: ManagedProjectionCapture] = [:]
+        for entryID in runtimes.keys {
+            captures[entryID] = ManagedProjectionCapture(
+                generation: runtimeGenerations[entryID],
+                projectionRevision: advanceProjectionRevision(
+                    entryID: entryID
+                )
+            )
+        }
         let snapshots = try await processClient.snapshots()
 
+        guard managedEnumerationRevision == enumerationRevision else {
+            return snapshots
+        }
         for entryID in snapshots.keys.sorted(by: uuidLessThan) {
-            guard runtimeGenerations[entryID]
-                    == capturedGenerations[entryID],
-                  let snapshot = snapshots[entryID] else {
+            guard let snapshot = snapshots[entryID] else {
                 continue
+            }
+            if let capture = captures[entryID] {
+                guard runtimeGenerations[entryID]
+                        == capture.generation,
+                      projectionRevisions[entryID]
+                        == capture.projectionRevision else {
+                    continue
+                }
+            } else {
+                guard runtimes[entryID] == nil,
+                      runtimeGenerations[entryID] == nil,
+                      projectionRevisions[entryID] == nil else {
+                    continue
+                }
+                _ = advanceProjectionRevision(entryID: entryID)
             }
             adoptManagedSnapshot(snapshot)
         }
@@ -414,8 +461,14 @@ final class RuntimeStore {
 
     func clearOutput(entryID: UUID) {
         let entryRuntime = runtime(for: entryID)
-        if let generation = runtimeGenerations[entryID],
-           var session = outputSessions[generation] {
+        let generations = outputSessions.compactMap {
+            generation, session -> UUID? in
+            session.entryID == entryID ? generation : nil
+        }
+        for generation in generations {
+            guard var session = outputSessions[generation] else {
+                continue
+            }
             session.pipeline.clear()
             session.retainedLines.removeAll()
             session.retainedMatch = nil
@@ -588,6 +641,7 @@ final class RuntimeStore {
                 return supersededResult(entryID: entry.id)
             }
 
+            _ = advanceProjectionRevision(entryID: entry.id)
             promoteOutputSession(
                 entryID: entry.id,
                 generation: nextGeneration
@@ -625,6 +679,7 @@ final class RuntimeStore {
             ) else {
                 return supersededResult(entryID: entryID)
             }
+            _ = advanceProjectionRevision(entryID: entryID)
             entryRuntime.lastError = nil
             stopMonitoringIfIdle()
             return EntryActionResult(
@@ -648,6 +703,9 @@ final class RuntimeStore {
 
             switch result {
             case .stopped, .alreadyStopped:
+                let stopProjectionRevision =
+                    advanceProjectionRevision(entryID: entryID)
+                entryRuntime.lastError = nil
                 let snapshot = try await processClient.refresh(
                     entryID: entryID
                 )
@@ -657,14 +715,22 @@ final class RuntimeStore {
                 ), runtimeGenerations[entryID] == generation else {
                     return supersededResult(entryID: entryID)
                 }
+                guard projectionRevisions[entryID]
+                        == stopProjectionRevision else {
+                    stopMonitoringIfIdle()
+                    return EntryActionResult(
+                        entryID: entryID,
+                        errorDescription: nil
+                    )
+                }
                 entryRuntime.process = snapshot
-                entryRuntime.lastError = nil
                 stopMonitoringIfIdle()
                 return EntryActionResult(
                     entryID: entryID,
                     errorDescription: nil
                 )
             case .timedOut(let snapshot):
+                _ = advanceProjectionRevision(entryID: entryID)
                 entryRuntime.process = snapshot
                 let description = didNotStopDescription(snapshot)
                 entryRuntime.lastError = description
@@ -882,6 +948,29 @@ final class RuntimeStore {
         operationIDs[entryID] == operationID
     }
 
+    @discardableResult
+    private func advanceProjectionRevision(
+        entryID: UUID
+    ) -> UInt64 {
+        let current = projectionRevisions[entryID] ?? 0
+        precondition(
+            current < UInt64.max,
+            "Projection revision exhausted for \(entryID)."
+        )
+        let next = current + 1
+        projectionRevisions[entryID] = next
+        return next
+    }
+
+    private func advanceManagedEnumerationRevision() -> UInt64 {
+        precondition(
+            managedEnumerationRevision < UInt64.max,
+            "Managed enumeration revision exhausted."
+        )
+        managedEnumerationRevision += 1
+        return managedEnumerationRevision
+    }
+
     private func admitLaunch() -> Bool {
         guard terminationBarrier == nil else {
             return false
@@ -905,6 +994,7 @@ final class RuntimeStore {
         _ error: Error,
         for entryRuntime: EntryRuntime
     ) -> EntryActionResult {
+        _ = advanceProjectionRevision(entryID: entryRuntime.entryID)
         let description = describeProcessError(error)
         entryRuntime.lastError = description
         return EntryActionResult(
