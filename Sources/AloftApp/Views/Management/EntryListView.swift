@@ -25,22 +25,33 @@ struct EntryListView: View {
                             }
                             Divider()
                             Button("Start") {
-                                start(entry)
+                                model.startEntry(id: entry.id)
                             }
-                            .disabled(entryIsLive(entry))
+                            .disabled(
+                                entryIsLive(entry)
+                                    || entryIsProtected(entry)
+                            )
                             Button("Stop") {
-                                stop(entry)
+                                model.stopEntry(id: entry.id)
                             }
-                            .disabled(!entryIsLive(entry))
+                            .disabled(
+                                !entryIsLive(entry)
+                                    || entryIsProtected(entry)
+                            )
                             Button("Restart") {
-                                restart(entry)
+                                model.restartEntry(id: entry.id)
                             }
-                            .disabled(!entryIsLive(entry))
+                            .disabled(
+                                !entryIsLive(entry)
+                                    || entryIsProtected(entry)
+                            )
                             Divider()
                             Button("Delete", role: .destructive) {
                                 deleteEntry(entry, in: group.id)
                             }
-                            .disabled(entryIsLive(entry))
+                            .disabled(
+                                model.entryDeletionIsBlocked(entry.id)
+                            )
                         }
                     }
                     .onMove { offsets, destination in
@@ -116,6 +127,10 @@ struct EntryListView: View {
         model.runtime.liveEntryIDs.contains(entry.id)
     }
 
+    private func entryIsProtected(_ entry: CommandEntry) -> Bool {
+        model.runtime.protectedEntryIDs.contains(entry.id)
+    }
+
     private func deleteEntry(
         _ entry: CommandEntry,
         in groupID: UUID
@@ -127,23 +142,6 @@ struct EntryListView: View {
         }
     }
 
-    private func start(_ entry: CommandEntry) {
-        Task {
-            _ = await model.runtime.start(entry)
-        }
-    }
-
-    private func stop(_ entry: CommandEntry) {
-        Task {
-            _ = await model.runtime.stop(entry)
-        }
-    }
-
-    private func restart(_ entry: CommandEntry) {
-        Task {
-            _ = await model.runtime.restart(entry)
-        }
-    }
 }
 
 private struct EntryRow: View {

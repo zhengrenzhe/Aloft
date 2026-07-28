@@ -13,12 +13,7 @@ final class AppModel {
     var presentedError: String?
 
     var orderedGroups: [CommandGroup] {
-        workspace.configuration.groups.sorted {
-            if $0.order != $1.order {
-                return $0.order < $1.order
-            }
-            return $0.id.uuidString < $1.id.uuidString
-        }
+        workspace.configuration.groups
     }
 
     var selectedGroup: CommandGroup? {
@@ -121,10 +116,13 @@ final class AppModel {
 
         try workspace.deleteGroup(
             id: id,
-            liveEntryIDs: runtime.liveEntryIDs
+            liveEntryIDs: runtime.deletionProtectedEntryIDs
         )
 
-        if deletingSelection {
+        let selectedEntryStillExists = selectedEntryID.flatMap {
+            entry(id: $0)
+        } != nil
+        if deletingSelection, !selectedEntryStillExists {
             let groups = orderedGroups
             if let deletedIndex, !groups.isEmpty {
                 selectedGroupID = groups[
@@ -199,7 +197,7 @@ final class AppModel {
         try workspace.deleteEntry(
             id: id,
             in: groupID,
-            isLive: runtime.liveEntryIDs.contains(id)
+            isLive: runtime.deletionProtectedEntryIDs.contains(id)
         )
 
         if deletingSelection, selectedGroupID == groupID {
@@ -236,20 +234,29 @@ final class AppModel {
             return
         }
 
-        if !groups.contains(where: { $0.id == selectedGroupID }) {
-            selectedGroupID = groups[0].id
-        }
-        guard let group = groups.first(
-            where: { $0.id == selectedGroupID }
-        ) else {
-            selectedGroupID = nil
-            selectedEntryID = nil
+        if let selectedEntryID,
+           let containingGroup = groups.first(
+            where: {
+                $0.entries.contains {
+                    $0.id == selectedEntryID
+                }
+            }
+           ) {
+            selectedGroupID = containingGroup.id
             return
         }
-        let entries = orderedEntries(in: group)
-        if !entries.contains(where: { $0.id == selectedEntryID }) {
-            selectedEntryID = entries.first?.id
+
+        let group: CommandGroup
+        if let selectedGroup = groups.first(
+            where: { $0.id == selectedGroupID }
+        ) {
+            group = selectedGroup
+        } else {
+            group = groups[0]
+            selectedGroupID = group.id
         }
+        let entries = orderedEntries(in: group)
+        selectedEntryID = entries.first?.id
     }
 
     func orderedEntries(in groupID: UUID) -> [CommandEntry] {
@@ -259,6 +266,150 @@ final class AppModel {
             return []
         }
         return orderedEntries(in: group)
+    }
+
+    func group(id: UUID) -> CommandGroup? {
+        orderedGroups.first { $0.id == id }
+    }
+
+    func entry(id: UUID) -> CommandEntry? {
+        orderedGroups.lazy
+            .flatMap(\.entries)
+            .first { $0.id == id }
+    }
+
+    func entry(id: UUID, in groupID: UUID) -> CommandEntry? {
+        group(id: groupID)?.entries.first { $0.id == id }
+    }
+
+    func entryDeletionIsBlocked(_ entryID: UUID) -> Bool {
+        runtime.deletionProtectedEntryIDs.contains(entryID)
+    }
+
+    func groupDeletionIsBlocked(_ groupID: UUID) -> Bool {
+        guard let group = group(id: groupID) else {
+            return false
+        }
+        return group.entries.contains {
+            runtime.deletionProtectedEntryIDs.contains($0.id)
+        }
+    }
+
+    @discardableResult
+    func startEntry(
+        id entryID: UUID
+    ) -> Task<EntryActionResult, Never>? {
+        guard let entry = entry(id: entryID) else {
+            return nil
+        }
+        let reservation = runtime.reserveOperations(
+            entryIDs: [entryID]
+        )
+        let runtime = runtime
+        return Task { @MainActor in
+            await runtime.start(
+                entry,
+                reservation: reservation
+            )
+        }
+    }
+
+    @discardableResult
+    func stopEntry(
+        id entryID: UUID
+    ) -> Task<EntryActionResult, Never>? {
+        guard let entry = entry(id: entryID) else {
+            return nil
+        }
+        let reservation = runtime.reserveOperations(
+            entryIDs: [entryID]
+        )
+        let runtime = runtime
+        return Task { @MainActor in
+            await runtime.stop(
+                entry,
+                reservation: reservation
+            )
+        }
+    }
+
+    @discardableResult
+    func restartEntry(
+        id entryID: UUID
+    ) -> Task<EntryActionResult, Never>? {
+        guard let entry = entry(id: entryID) else {
+            return nil
+        }
+        let reservation = runtime.reserveOperations(
+            entryIDs: [entryID]
+        )
+        let runtime = runtime
+        return Task { @MainActor in
+            await runtime.restart(
+                entry,
+                reservation: reservation
+            )
+        }
+    }
+
+    @discardableResult
+    func startGroup(
+        id groupID: UUID
+    ) -> Task<[EntryActionResult], Never>? {
+        guard let group = group(id: groupID) else {
+            return nil
+        }
+        let entries = group.entries
+        let reservation = runtime.reserveOperations(
+            entryIDs: entries.map(\.id)
+        )
+        let runtime = runtime
+        return Task { @MainActor in
+            await runtime.startAll(
+                entries,
+                reservation: reservation
+            )
+        }
+    }
+
+    @discardableResult
+    func stopGroup(
+        id groupID: UUID
+    ) -> Task<[EntryActionResult], Never>? {
+        guard let group = group(id: groupID) else {
+            return nil
+        }
+        let entries = group.entries
+        let reservation = runtime.reserveOperations(
+            entryIDs: entries.map(\.id)
+        )
+        let runtime = runtime
+        return Task { @MainActor in
+            await runtime.stopAll(
+                entries,
+                reservation: reservation
+            )
+        }
+    }
+
+    @discardableResult
+    func restartGroup(
+        id groupID: UUID
+    ) -> Task<[EntryActionResult], Never>? {
+        guard let group = group(id: groupID) else {
+            return nil
+        }
+        let entries = group.entries
+        let reservation = runtime.reserveOperations(
+            entryIDs: entries.map(\.id)
+        )
+        let runtime = runtime
+        return Task { @MainActor in
+            await runtime.restartAll(
+                entries,
+                reservation: reservation
+            )
+        }
     }
 
     func openSelectedEntryInGhostty() {
@@ -273,12 +424,7 @@ final class AppModel {
     private func orderedEntries(
         in group: CommandGroup
     ) -> [CommandEntry] {
-        group.entries.sorted {
-            if $0.order != $1.order {
-                return $0.order < $1.order
-            }
-            return $0.id.uuidString < $1.id.uuidString
-        }
+        group.entries
     }
 
     private static func fallbackModel(loadError: Error) -> AppModel {

@@ -254,10 +254,159 @@ final class WorkspaceStoreTests: XCTestCase {
             FileManager.default.fileExists(atPath: location.file.path)
         )
     }
+
+    func testRepositoryLoadCanonicalizesPhysicalOrderWithoutWriting() throws {
+        let location = temporaryConfigurationLocation()
+        defer { try? FileManager.default.removeItem(at: location.root) }
+        let fixture = unorderedConfigurationFixture()
+        let repository = ConfigurationRepository(fileURL: location.file)
+        try repository.save(fixture.configuration)
+        let bytesBeforeLoad = try Data(contentsOf: location.file)
+
+        let store = try WorkspaceStore(repository: repository)
+
+        XCTAssertEqual(
+            store.configuration.groups.map(\.id),
+            [fixture.groupB, fixture.groupC, fixture.groupA]
+        )
+        XCTAssertEqual(
+            store.configuration.groups.map(\.order),
+            [0, 1, 2]
+        )
+        XCTAssertEqual(
+            store.configuration.groups[2].entries.map(\.id),
+            [fixture.entryB, fixture.entryC, fixture.entryA]
+        )
+        XCTAssertEqual(
+            store.configuration.groups[2].entries.map(\.order),
+            [0, 1, 2]
+        )
+        XCTAssertEqual(try Data(contentsOf: location.file), bytesBeforeLoad)
+    }
+
+    func testInitialConfigurationCanonicalizesOrderAndMoveOffsets() throws {
+        let location = temporaryConfigurationLocation()
+        defer { try? FileManager.default.removeItem(at: location.root) }
+        let fixture = unorderedConfigurationFixture()
+        let repository = ConfigurationRepository(fileURL: location.file)
+        let store = WorkspaceStore(
+            repository: repository,
+            initialConfiguration: fixture.configuration
+        )
+
+        XCTAssertEqual(
+            store.configuration.groups.map(\.id),
+            [fixture.groupB, fixture.groupC, fixture.groupA]
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: location.file.path)
+        )
+
+        try store.moveGroups(
+            fromOffsets: IndexSet(integer: 0),
+            toOffset: 3
+        )
+        try store.moveEntries(
+            in: fixture.groupA,
+            fromOffsets: IndexSet(integer: 0),
+            toOffset: 3
+        )
+
+        XCTAssertEqual(
+            store.configuration.groups.map(\.id),
+            [fixture.groupC, fixture.groupA, fixture.groupB]
+        )
+        let groupA = try XCTUnwrap(
+            store.configuration.groups.first {
+                $0.id == fixture.groupA
+            }
+        )
+        XCTAssertEqual(
+            groupA.entries.map(\.id),
+            [fixture.entryC, fixture.entryA, fixture.entryB]
+        )
+        XCTAssertEqual(
+            try repository.load(),
+            store.configuration
+        )
+    }
 }
 
 private func temporaryConfigurationLocation() -> (root: URL, file: URL) {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("Aloft-WorkspaceStoreTests-\(UUID().uuidString)")
     return (root, root.appendingPathComponent("config.json"))
+}
+
+private func unorderedConfigurationFixture() -> (
+    configuration: WorkspaceConfiguration,
+    groupA: UUID,
+    groupB: UUID,
+    groupC: UUID,
+    entryA: UUID,
+    entryB: UUID,
+    entryC: UUID
+) {
+    let groupA = UUID(uuidString: "00000000-0000-0000-0000-00000000000A")!
+    let groupB = UUID(uuidString: "00000000-0000-0000-0000-00000000000B")!
+    let groupC = UUID(uuidString: "00000000-0000-0000-0000-00000000000C")!
+    let entryA = UUID(uuidString: "00000000-0000-0000-0000-00000000001A")!
+    let entryB = UUID(uuidString: "00000000-0000-0000-0000-00000000001B")!
+    let entryC = UUID(uuidString: "00000000-0000-0000-0000-00000000001C")!
+    let entries = [
+        CommandEntry(
+            id: entryA,
+            name: "A",
+            cwd: "/tmp",
+            command: "echo A",
+            keywords: [],
+            order: 2
+        ),
+        CommandEntry(
+            id: entryB,
+            name: "B",
+            cwd: "/tmp",
+            command: "echo B",
+            keywords: [],
+            order: 0
+        ),
+        CommandEntry(
+            id: entryC,
+            name: "C",
+            cwd: "/tmp",
+            command: "echo C",
+            keywords: [],
+            order: 1
+        ),
+    ]
+    return (
+        WorkspaceConfiguration(
+            groups: [
+                CommandGroup(
+                    id: groupA,
+                    name: "A",
+                    order: 2,
+                    entries: entries
+                ),
+                CommandGroup(
+                    id: groupB,
+                    name: "B",
+                    order: 0,
+                    entries: []
+                ),
+                CommandGroup(
+                    id: groupC,
+                    name: "C",
+                    order: 1,
+                    entries: []
+                ),
+            ]
+        ),
+        groupA,
+        groupB,
+        groupC,
+        entryA,
+        entryB,
+        entryC
+    )
 }

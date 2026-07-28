@@ -46,7 +46,9 @@ final class WorkspaceStore {
 
     init(repository: ConfigurationRepository) throws {
         self.repository = repository
-        configuration = try repository.load()
+        configuration = canonicalized(
+            try repository.load()
+        )
     }
 
     init(
@@ -54,7 +56,7 @@ final class WorkspaceStore {
         initialConfiguration: WorkspaceConfiguration
     ) {
         self.repository = repository
-        configuration = initialConfiguration
+        configuration = canonicalized(initialConfiguration)
     }
 
     func addGroup(name: String) throws -> UUID {
@@ -291,6 +293,31 @@ private func normalizeEntryOrders(_ entries: inout [CommandEntry]) {
     for index in entries.indices {
         entries[index].order = index
     }
+}
+
+private func canonicalized(
+    _ configuration: WorkspaceConfiguration
+) -> WorkspaceConfiguration {
+    var result = configuration
+    result.groups.sort {
+        if $0.order != $1.order {
+            return $0.order < $1.order
+        }
+        return $0.id.uuidString < $1.id.uuidString
+    }
+    for groupIndex in result.groups.indices {
+        result.groups[groupIndex].entries.sort {
+            if $0.order != $1.order {
+                return $0.order < $1.order
+            }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+        normalizeEntryOrders(
+            &result.groups[groupIndex].entries
+        )
+    }
+    normalizeGroupOrders(&result.groups)
+    return result
 }
 
 private func move<Element>(

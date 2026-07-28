@@ -4,6 +4,7 @@ struct EntryDetailView: View {
     let model: AppModel
 
     @State private var autoScroll = true
+    @State private var editor: DetailEntryEditorPresentation?
 
     var body: some View {
         Group {
@@ -18,6 +19,24 @@ struct EntryDetailView: View {
                         "Select a command to inspect its process and output."
                     )
                 )
+            }
+        }
+        .sheet(item: $editor) { presentation in
+            if let entry = model.entry(
+                id: presentation.entryID,
+                in: presentation.groupID
+            ) {
+                EntryEditorView(
+                    model: model,
+                    groupID: presentation.groupID,
+                    entry: entry
+                )
+            } else {
+                ContentUnavailableView(
+                    "Command No Longer Exists",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .frame(minWidth: 360, minHeight: 220)
             }
         }
     }
@@ -64,7 +83,6 @@ struct EntryDetailView: View {
                     Text(match.line)
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
                         .textSelection(.enabled)
                 }
                 .accessibilityElement(children: .combine)
@@ -99,17 +117,35 @@ struct EntryDetailView: View {
         .navigationTitle(entry.name)
         .toolbar {
             ToolbarItemGroup {
+                Button("Edit", systemImage: "pencil") {
+                    guard let groupID = model.selectedGroupID else {
+                        return
+                    }
+                    editor = DetailEntryEditorPresentation(
+                        groupID: groupID,
+                        entryID: entry.id
+                    )
+                }
                 if isLive {
                     Button("Stop", systemImage: "stop.fill") {
-                        stop(entry)
+                        model.stopEntry(id: entry.id)
                     }
+                    .disabled(
+                        model.runtime.protectedEntryIDs.contains(entry.id)
+                    )
                     Button("Restart", systemImage: "arrow.clockwise") {
-                        restart(entry)
+                        model.restartEntry(id: entry.id)
                     }
+                    .disabled(
+                        model.runtime.protectedEntryIDs.contains(entry.id)
+                    )
                 } else {
                     Button("Start", systemImage: "play.fill") {
-                        start(entry)
+                        model.startEntry(id: entry.id)
                     }
+                    .disabled(
+                        model.runtime.protectedEntryIDs.contains(entry.id)
+                    )
                 }
             }
         }
@@ -118,23 +154,13 @@ struct EntryDetailView: View {
         }
     }
 
-    private func start(_ entry: CommandEntry) {
-        Task {
-            _ = await model.runtime.start(entry)
-        }
-    }
+}
 
-    private func stop(_ entry: CommandEntry) {
-        Task {
-            _ = await model.runtime.stop(entry)
-        }
-    }
+private struct DetailEntryEditorPresentation: Identifiable {
+    let groupID: UUID
+    let entryID: UUID
 
-    private func restart(_ entry: CommandEntry) {
-        Task {
-            _ = await model.runtime.restart(entry)
-        }
-    }
+    var id: UUID { entryID }
 }
 
 private struct ProcessStatusLabel: View {

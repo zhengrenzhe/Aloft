@@ -99,6 +99,7 @@ struct RuntimeProcessClient: Sendable {
 enum RuntimeStoreError: Error, Equatable, LocalizedError {
     case terminationInProgress
     case operationSuperseded
+    case operationCancelled
 
     var errorDescription: String? {
         switch self {
@@ -106,8 +107,14 @@ enum RuntimeStoreError: Error, Equatable, LocalizedError {
             return "Aloft is stopping managed processes for termination."
         case .operationSuperseded:
             return "The operation was superseded by a newer process generation."
+        case .operationCancelled:
+            return "The operation was cancelled."
         }
     }
+}
+
+struct RuntimeOperationReservation: Equatable, Sendable {
+    fileprivate let id: UUID
 }
 
 struct TerminationBarrierToken: Equatable, Sendable {
@@ -153,6 +160,7 @@ final class RuntimeStore {
 
     private(set) var runtimes: [UUID: EntryRuntime] = [:]
     private(set) var latestGlobalMatch: KeywordMatchEvent?
+    private(set) var protectionCounts: [UUID: Int] = [:]
 
     @ObservationIgnored
     let supervisor: ProcessSupervisor
@@ -177,6 +185,9 @@ final class RuntimeStore {
 
     @ObservationIgnored
     private var entryLanes: [UUID: EntryOperationLane] = [:]
+
+    @ObservationIgnored
+    private var reservations: [UUID: Set<UUID>] = [:]
 
     @ObservationIgnored
     private var knownEntries: [UUID: CommandEntry] = [:]
@@ -205,6 +216,14 @@ final class RuntimeStore {
         admittedLaunchCount
     }
 
+    var protectedEntryIDs: Set<UUID> {
+        Set(protectionCounts.keys)
+    }
+
+    var deletionProtectedEntryIDs: Set<UUID> {
+        liveEntryIDs.union(protectedEntryIDs)
+    }
+
     init(supervisor: ProcessSupervisor) {
         self.supervisor = supervisor
         processClient = RuntimeProcessClient(supervisor: supervisor)
@@ -227,16 +246,59 @@ final class RuntimeStore {
         return runtime
     }
 
+    func protectionCount(for entryID: UUID) -> Int {
+        protectionCounts[entryID] ?? 0
+    }
+
+    func reserveOperations(
+        entryIDs: [UUID]
+    ) -> RuntimeOperationReservation {
+        let reservation = RuntimeOperationReservation(id: UUID())
+        let uniqueEntryIDs = Set(entryIDs)
+        reservations[reservation.id] = uniqueEntryIDs
+        for entryID in uniqueEntryIDs {
+            protectionCounts[entryID, default: 0] += 1
+        }
+        return reservation
+    }
+
     func start(_ entry: CommandEntry) async -> EntryActionResult {
+        let reservation = reserveOperations(entryIDs: [entry.id])
+        return await start(entry, reservation: reservation)
+    }
+
+    func start(
+        _ entry: CommandEntry,
+        reservation: RuntimeOperationReservation
+    ) async -> EntryActionResult {
+        require(
+            reservation,
+            protects: [entry.id]
+        )
+        defer { releaseReservation(reservation) }
+        return await startOperation(entry)
+    }
+
+    private func startOperation(
+        _ entry: CommandEntry
+    ) async -> EntryActionResult {
         guard admitLaunch() else {
             return recordFailure(
                 RuntimeStoreError.terminationInProgress,
                 for: runtime(for: entry.id)
             )
         }
+        defer { completeAdmittedLaunch() }
 
         let lane = lane(for: entry.id)
         await lane.acquire()
+        if Task.isCancelled {
+            await lane.release()
+            return recordFailure(
+                RuntimeStoreError.operationCancelled,
+                for: runtime(for: entry.id)
+            )
+        }
         let operationID = beginOperation(entryID: entry.id)
         let result = await startLocked(
             entry,
@@ -244,7 +306,6 @@ final class RuntimeStore {
         )
         finishOperation(entryID: entry.id, operationID: operationID)
         await lane.release()
-        completeAdmittedLaunch()
         return result
     }
 
@@ -252,6 +313,24 @@ final class RuntimeStore {
         _ entry: CommandEntry,
         timeout: Duration = .seconds(5)
     ) async -> EntryActionResult {
+        let reservation = reserveOperations(entryIDs: [entry.id])
+        return await stop(
+            entry,
+            timeout: timeout,
+            reservation: reservation
+        )
+    }
+
+    func stop(
+        _ entry: CommandEntry,
+        timeout: Duration = .seconds(5),
+        reservation: RuntimeOperationReservation
+    ) async -> EntryActionResult {
+        require(
+            reservation,
+            protects: [entry.id]
+        )
+        defer { releaseReservation(reservation) }
         knownEntries[entry.id] = entry
         return await stopSerialized(
             entryID: entry.id,
@@ -263,15 +342,48 @@ final class RuntimeStore {
         _ entry: CommandEntry,
         timeout: Duration = .seconds(5)
     ) async -> EntryActionResult {
+        let reservation = reserveOperations(entryIDs: [entry.id])
+        return await restart(
+            entry,
+            timeout: timeout,
+            reservation: reservation
+        )
+    }
+
+    func restart(
+        _ entry: CommandEntry,
+        timeout: Duration = .seconds(5),
+        reservation: RuntimeOperationReservation
+    ) async -> EntryActionResult {
+        require(
+            reservation,
+            protects: [entry.id]
+        )
+        defer { releaseReservation(reservation) }
+        return await restartOperation(entry, timeout: timeout)
+    }
+
+    private func restartOperation(
+        _ entry: CommandEntry,
+        timeout: Duration
+    ) async -> EntryActionResult {
         guard admitLaunch() else {
             return recordFailure(
                 RuntimeStoreError.terminationInProgress,
                 for: runtime(for: entry.id)
             )
         }
+        defer { completeAdmittedLaunch() }
 
         let lane = lane(for: entry.id)
         await lane.acquire()
+        if Task.isCancelled {
+            await lane.release()
+            return recordFailure(
+                RuntimeStoreError.operationCancelled,
+                for: runtime(for: entry.id)
+            )
+        }
         let operationID = beginOperation(entryID: entry.id)
         knownEntries[entry.id] = entry
 
@@ -292,26 +404,89 @@ final class RuntimeStore {
 
         finishOperation(entryID: entry.id, operationID: operationID)
         await lane.release()
-        completeAdmittedLaunch()
         return result
     }
 
     func startAll(_ entries: [CommandEntry]) async -> [EntryActionResult] {
-        await performAll(entries, action: .start)
+        let reservation = reserveOperations(
+            entryIDs: entries.map(\.id)
+        )
+        return await startAll(
+            entries,
+            reservation: reservation
+        )
+    }
+
+    func startAll(
+        _ entries: [CommandEntry],
+        reservation: RuntimeOperationReservation
+    ) async -> [EntryActionResult] {
+        require(
+            reservation,
+            protects: entries.map(\.id)
+        )
+        defer { releaseReservation(reservation) }
+        return await performAll(entries, action: .start)
     }
 
     func stopAll(
         _ entries: [CommandEntry],
         timeout: Duration = .seconds(5)
     ) async -> [EntryActionResult] {
-        await performAll(entries, action: .stop(timeout))
+        let reservation = reserveOperations(
+            entryIDs: entries.map(\.id)
+        )
+        return await stopAll(
+            entries,
+            timeout: timeout,
+            reservation: reservation
+        )
+    }
+
+    func stopAll(
+        _ entries: [CommandEntry],
+        timeout: Duration = .seconds(5),
+        reservation: RuntimeOperationReservation
+    ) async -> [EntryActionResult] {
+        require(
+            reservation,
+            protects: entries.map(\.id)
+        )
+        defer { releaseReservation(reservation) }
+        return await performAll(
+            entries,
+            action: .stop(timeout)
+        )
     }
 
     func restartAll(
         _ entries: [CommandEntry],
         timeout: Duration = .seconds(5)
     ) async -> [EntryActionResult] {
-        await performAll(entries, action: .restart(timeout))
+        let reservation = reserveOperations(
+            entryIDs: entries.map(\.id)
+        )
+        return await restartAll(
+            entries,
+            timeout: timeout,
+            reservation: reservation
+        )
+    }
+
+    func restartAll(
+        _ entries: [CommandEntry],
+        timeout: Duration = .seconds(5),
+        reservation: RuntimeOperationReservation
+    ) async -> [EntryActionResult] {
+        require(
+            reservation,
+            protects: entries.map(\.id)
+        )
+        defer { releaseReservation(reservation) }
+        return await performAll(
+            entries,
+            action: .restart(timeout)
+        )
     }
 
     func beginMonitoring() {
@@ -554,7 +729,9 @@ final class RuntimeStore {
         entryIDs: [UUID],
         timeout: Duration
     ) async -> [EntryActionResult] {
-        await withTaskGroup(
+        let reservation = reserveOperations(entryIDs: entryIDs)
+        defer { releaseReservation(reservation) }
+        return await withTaskGroup(
             of: (Int, EntryActionResult).self,
             returning: [EntryActionResult].self
         ) { group in
@@ -764,14 +941,14 @@ final class RuntimeStore {
                     let result: EntryActionResult
                     switch action {
                     case .start:
-                        result = await self.start(entry)
+                        result = await self.startOperation(entry)
                     case .stop(let timeout):
-                        result = await self.stop(
+                        result = await self.stopOperation(
                             entry,
                             timeout: timeout
                         )
                     case .restart(let timeout):
-                        result = await self.restart(
+                        result = await self.restartOperation(
                             entry,
                             timeout: timeout
                         )
@@ -786,6 +963,17 @@ final class RuntimeStore {
             }
             return values.sorted { $0.0 < $1.0 }.map(\.1)
         }
+    }
+
+    private func stopOperation(
+        _ entry: CommandEntry,
+        timeout: Duration
+    ) async -> EntryActionResult {
+        knownEntries[entry.id] = entry
+        return await stopSerialized(
+            entryID: entry.id,
+            timeout: timeout
+        )
     }
 
     private func installPendingOutputSession(
@@ -969,6 +1157,41 @@ final class RuntimeStore {
         )
         managedEnumerationRevision += 1
         return managedEnumerationRevision
+    }
+
+    private func require(
+        _ reservation: RuntimeOperationReservation,
+        protects entryIDs: [UUID]
+    ) {
+        guard let protectedIDs = reservations[reservation.id],
+              Set(entryIDs).isSubset(of: protectedIDs) else {
+            preconditionFailure(
+                "Runtime operation used an inactive or mismatched reservation."
+            )
+        }
+    }
+
+    private func releaseReservation(
+        _ reservation: RuntimeOperationReservation
+    ) {
+        guard let entryIDs = reservations.removeValue(
+            forKey: reservation.id
+        ) else {
+            return
+        }
+        for entryID in entryIDs {
+            guard let count = protectionCounts[entryID],
+                  count > 0 else {
+                preconditionFailure(
+                    "Runtime protection count is unbalanced."
+                )
+            }
+            if count == 1 {
+                protectionCounts.removeValue(forKey: entryID)
+            } else {
+                protectionCounts[entryID] = count - 1
+            }
+        }
     }
 
     private func admitLaunch() -> Bool {

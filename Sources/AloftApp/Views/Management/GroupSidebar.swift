@@ -21,19 +21,21 @@ struct GroupSidebar: View {
                     }
                     Divider()
                     Button("Start All") {
-                        startAll(group.entries)
+                        model.startGroup(id: group.id)
                     }
                     Button("Stop All") {
-                        stopAll(group.entries)
+                        model.stopGroup(id: group.id)
                     }
                     Button("Restart All") {
-                        restartAll(group.entries)
+                        model.restartGroup(id: group.id)
                     }
                     Divider()
                     Button("Delete", role: .destructive) {
                         deleteGroup(group)
                     }
-                    .disabled(groupIsLive(group))
+                    .disabled(
+                        model.groupDeletionIsBlocked(group.id)
+                    )
                 }
             }
             .onMove { offsets, destination in
@@ -75,12 +77,6 @@ struct GroupSidebar: View {
         )
     }
 
-    private func groupIsLive(_ group: CommandGroup) -> Bool {
-        group.entries.contains {
-            model.runtime.liveEntryIDs.contains($0.id)
-        }
-    }
-
     private func deleteGroup(_ group: CommandGroup) {
         do {
             try model.deleteGroup(id: group.id)
@@ -89,23 +85,6 @@ struct GroupSidebar: View {
         }
     }
 
-    private func startAll(_ entries: [CommandEntry]) {
-        Task {
-            _ = await model.runtime.startAll(entries)
-        }
-    }
-
-    private func stopAll(_ entries: [CommandEntry]) {
-        Task {
-            _ = await model.runtime.stopAll(entries)
-        }
-    }
-
-    private func restartAll(_ entries: [CommandEntry]) {
-        Task {
-            _ = await model.runtime.restartAll(entries)
-        }
-    }
 }
 
 private struct GroupRow: View {
