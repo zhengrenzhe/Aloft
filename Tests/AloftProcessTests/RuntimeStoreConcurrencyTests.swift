@@ -794,6 +794,42 @@ final class RuntimeStoreConcurrencyTests: XCTestCase {
         XCTAssertTrue(snapshots.isEmpty)
     }
 
+    func testCancelledTerminationReleasesBarrierAndDoesNotReportSafe() async {
+        let fake = ControlledProcessSupervisor()
+        let snapshotsGate = AsyncTestGate()
+        await fake.setSnapshotsGate(snapshotsGate, call: 1)
+        let runtime = await makeRuntimeStore(fake)
+
+        let terminationTask = Task {
+            await TerminationCoordinator(runtimeStore: runtime)
+                .stopAllForTermination(timeout: .milliseconds(50))
+        }
+        let enumerationEntered = await waitUntilAsync {
+            await fake.snapshotsCallCount == 1
+        }
+        XCTAssertTrue(enumerationEntered)
+        XCTAssertTrue(runtime.isTerminating)
+
+        terminationTask.cancel()
+        await snapshotsGate.open()
+        let result = await terminationTask.value
+
+        XCTAssertEqual(result, .cancelled)
+        XCTAssertFalse(runtime.isTerminating)
+    }
+
+    func testTerminationEnumerationErrorReleasesBarrier() async {
+        let fake = ControlledProcessSupervisor()
+        await fake.setSnapshotsError(call: 1)
+        let runtime = await makeRuntimeStore(fake)
+
+        let result = await TerminationCoordinator(runtimeStore: runtime)
+            .stopAllForTermination(timeout: .milliseconds(50))
+
+        XCTAssertEqual(result, .remaining([]))
+        XCTAssertFalse(runtime.isTerminating)
+    }
+
     func testTerminationWaitsForGatedRealStartAndReportsActualLivePGID() async throws {
         let supervisor = ProcessSupervisor()
         let harness = GatedRealClientHarness()
@@ -899,6 +935,7 @@ private actor ControlledProcessSupervisor {
             gate: AsyncTestGate?
         )
     ] = [:]
+    private var snapshotsErrorCalls: Set<Int> = []
 
     private(set) var startCallCount = 0
     private(set) var stopCallCount = 0
@@ -960,6 +997,10 @@ private actor ControlledProcessSupervisor {
         call: Int
     ) {
         snapshotsOverrides[call] = (snapshots, gate)
+    }
+
+    func setSnapshotsError(call: Int) {
+        snapshotsErrorCalls.insert(call)
     }
 
     func replaceRecord(_ snapshot: ProcessSnapshot) {
@@ -1042,6 +1083,9 @@ private actor ControlledProcessSupervisor {
     func snapshots() async throws -> [UUID: ProcessSnapshot] {
         snapshotsCallCount += 1
         let call = snapshotsCallCount
+        if snapshotsErrorCalls.contains(call) {
+            throw ProcessSupervisorError.unknownEntry
+        }
         if let override = snapshotsOverrides[call] {
             if let gate = override.gate {
                 await gate.wait()

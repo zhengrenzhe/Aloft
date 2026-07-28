@@ -9,6 +9,7 @@ struct RemainingProcess: Equatable, Sendable {
 enum TerminationResult: Equatable, Sendable {
     case safeToTerminate
     case remaining([RemainingProcess])
+    case cancelled
 
     var remaining: [RemainingProcess] {
         if case .remaining(let values) = self {
@@ -26,16 +27,32 @@ struct TerminationCoordinator {
         timeout: Duration = .seconds(5)
     ) async -> TerminationResult {
         let barrier = runtimeStore.beginTerminationBarrier()
+        var preservesBarrierForSafeTermination = false
+        defer {
+            if !preservesBarrierForSafeTermination
+                || Task.isCancelled {
+                runtimeStore.cancelTerminationBarrier(barrier)
+            }
+        }
         await runtimeStore.waitForAdmittedLaunches()
+        guard !Task.isCancelled else {
+            return cancelTermination(barrier: barrier)
+        }
 
         let initialSnapshots: [UUID: ProcessSnapshot]
         do {
             initialSnapshots = try await runtimeStore
                 .refreshManagedRecords()
         } catch {
+            if Task.isCancelled {
+                return cancelTermination(barrier: barrier)
+            }
             return cancelTerminationAfterEnumerationFailure(
                 barrier: barrier
             )
+        }
+        guard !Task.isCancelled else {
+            return cancelTermination(barrier: barrier)
         }
 
         let liveEntryIDs = initialSnapshots.values
@@ -49,15 +66,24 @@ struct TerminationCoordinator {
             entryIDs: liveEntryIDs,
             timeout: timeout
         )
+        guard !Task.isCancelled else {
+            return cancelTermination(barrier: barrier)
+        }
 
         let finalSnapshots: [UUID: ProcessSnapshot]
         do {
             finalSnapshots = try await runtimeStore
                 .refreshManagedRecords()
         } catch {
+            if Task.isCancelled {
+                return cancelTermination(barrier: barrier)
+            }
             return cancelTerminationAfterEnumerationFailure(
                 barrier: barrier
             )
+        }
+        guard !Task.isCancelled else {
+            return cancelTermination(barrier: barrier)
         }
 
         let remaining = finalSnapshots.values.compactMap {
@@ -74,10 +100,17 @@ struct TerminationCoordinator {
         .sorted { $0.entryID.uuidString < $1.entryID.uuidString }
 
         guard !remaining.isEmpty else {
+            preservesBarrierForSafeTermination = true
             return .safeToTerminate
         }
-        runtimeStore.cancelTerminationBarrier(barrier)
         return .remaining(remaining)
+    }
+
+    private func cancelTermination(
+        barrier: TerminationBarrierToken
+    ) -> TerminationResult {
+        runtimeStore.cancelTerminationBarrier(barrier)
+        return .cancelled
     }
 
     private func cancelTerminationAfterEnumerationFailure(
