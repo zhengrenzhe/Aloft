@@ -32,9 +32,7 @@ struct KeywordMatcher: Sendable {
         guard lineRevision != priorRevision else { return [] }
         let oldPresence = presence
         resetStreamingState()
-        for character in lineRevision {
-            advanceCommitted(GraphemeToken(character))
-        }
+        for token in GraphemeToken.tokenize(lineRevision) { advanceCommitted(token) }
         priorRevision = lineRevision
         return events(for: presence.subtracting(oldPresence), line: lineRevision, at: timestamp)
     }
@@ -111,7 +109,7 @@ struct KeywordMatcher: Sendable {
 
         init(keyword: String) {
             self.keyword = keyword
-            tokens = keyword.map(GraphemeToken.init)
+            tokens = GraphemeToken.tokenize(keyword)
             prefixLengths = Self.makePrefixLengths(for: tokens)
         }
 
@@ -156,12 +154,24 @@ struct KeywordMatcher: Sendable {
 private struct GraphemeToken: Equatable, Sendable {
     let scalars: [UInt32]
 
-    init(_ character: Character) {
-        scalars = Array(String(character).decomposedStringWithCanonicalMapping.unicodeScalars).map(\.value)
-    }
-
     init(scalars: [UInt32]) {
         self.scalars = scalars
+    }
+
+    static func tokenize(_ text: String) -> [GraphemeToken] {
+        var state = GraphemeBoundaryState()
+        var builder = GraphemeTokenBuilder()
+        var tokens: [GraphemeToken] = []
+
+        for scalar in text.unicodeScalars {
+            if state.startsNewCluster(before: scalar), let token = builder.token() {
+                tokens.append(token)
+                builder.reset()
+            }
+            builder.append(scalar)
+        }
+        if let token = builder.token() { tokens.append(token) }
+        return tokens
     }
 }
 
@@ -197,12 +207,20 @@ private struct GraphemeBoundaryState: Sendable {
     private var regionalIndicatorCount = 0
     private var hasExtendedPictographicBeforeZWJ = false
     private var hasZWJAfterExtendedPictographic = false
+    private var hasIndicConsonantBeforeLinker = false
+    private var hasIndicLinkerAfterConsonant = false
 
     mutating func startsNewCluster(before scalar: Unicode.Scalar) -> Bool {
         let currentClass = graphemeClass(of: scalar)
         let currentIsExtendedPictographic = isExtendedPictographic(scalar)
+        let currentIndicClass = indicConjunctClass(of: scalar)
         guard let previousClass else {
-            consume(currentClass, isExtendedPictographic: currentIsExtendedPictographic, didBreak: true)
+            consume(
+                currentClass,
+                indicClass: currentIndicClass,
+                isExtendedPictographic: currentIsExtendedPictographic,
+                didBreak: true
+            )
             return false
         }
 
@@ -221,6 +239,8 @@ private struct GraphemeBoundaryState: Sendable {
             didBreak = false
         } else if previousClass == U_GCB_PREPEND {
             didBreak = false
+        } else if currentIndicClass == U_INCB_CONSONANT, hasIndicLinkerAfterConsonant {
+            didBreak = false
         } else if currentIsExtendedPictographic, hasZWJAfterExtendedPictographic {
             didBreak = false
         } else if previousClass == U_GCB_REGIONAL_INDICATOR, currentClass == U_GCB_REGIONAL_INDICATOR, regionalIndicatorCount % 2 == 1 {
@@ -228,7 +248,12 @@ private struct GraphemeBoundaryState: Sendable {
         } else {
             didBreak = true
         }
-        consume(currentClass, isExtendedPictographic: currentIsExtendedPictographic, didBreak: didBreak)
+        consume(
+            currentClass,
+            indicClass: currentIndicClass,
+            isExtendedPictographic: currentIsExtendedPictographic,
+            didBreak: didBreak
+        )
         return didBreak
     }
 
@@ -237,10 +262,13 @@ private struct GraphemeBoundaryState: Sendable {
         regionalIndicatorCount = 0
         hasExtendedPictographicBeforeZWJ = false
         hasZWJAfterExtendedPictographic = false
+        hasIndicConsonantBeforeLinker = false
+        hasIndicLinkerAfterConsonant = false
     }
 
     private mutating func consume(
         _ currentClass: UGraphemeClusterBreak,
+        indicClass: UIndicConjunctBreak,
         isExtendedPictographic: Bool,
         didBreak: Bool
     ) {
@@ -248,6 +276,8 @@ private struct GraphemeBoundaryState: Sendable {
             regionalIndicatorCount = 0
             hasExtendedPictographicBeforeZWJ = false
             hasZWJAfterExtendedPictographic = false
+            hasIndicConsonantBeforeLinker = false
+            hasIndicLinkerAfterConsonant = false
         }
         if currentClass == U_GCB_REGIONAL_INDICATOR {
             regionalIndicatorCount += 1
@@ -258,13 +288,23 @@ private struct GraphemeBoundaryState: Sendable {
             hasExtendedPictographicBeforeZWJ = true
             hasZWJAfterExtendedPictographic = false
         } else if currentClass == U_GCB_EXTEND {
-            // Extend preserves the GB11 context.
+            // Extend before ZWJ preserves GB11 context; Extend after ZWJ invalidates it.
+            hasZWJAfterExtendedPictographic = false
         } else if currentClass == U_GCB_ZWJ {
             hasZWJAfterExtendedPictographic = hasExtendedPictographicBeforeZWJ
             hasExtendedPictographicBeforeZWJ = false
         } else {
             hasExtendedPictographicBeforeZWJ = false
             hasZWJAfterExtendedPictographic = false
+        }
+        if indicClass == U_INCB_CONSONANT {
+            hasIndicConsonantBeforeLinker = true
+            hasIndicLinkerAfterConsonant = false
+        } else if indicClass == U_INCB_LINKER {
+            hasIndicLinkerAfterConsonant = hasIndicConsonantBeforeLinker
+        } else if indicClass != U_INCB_EXTEND {
+            hasIndicConsonantBeforeLinker = false
+            hasIndicLinkerAfterConsonant = false
         }
         previousClass = currentClass
     }
@@ -275,6 +315,10 @@ private struct GraphemeBoundaryState: Sendable {
 
     private func isExtendedPictographic(_ scalar: Unicode.Scalar) -> Bool {
         u_hasBinaryProperty(Int32(scalar.value), UCHAR_EXTENDED_PICTOGRAPHIC) != 0
+    }
+
+    private func indicConjunctClass(of scalar: Unicode.Scalar) -> UIndicConjunctBreak {
+        UIndicConjunctBreak(rawValue: UInt32(u_getIntPropertyValue(Int32(scalar.value), UCHAR_INDIC_CONJUNCT_BREAK)))
     }
 
     private func isControl(_ value: UGraphemeClusterBreak) -> Bool {
