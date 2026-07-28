@@ -34,20 +34,13 @@ struct KeywordMatcher: Sendable {
         resetPatternStates()
         var events: [KeywordMatchEvent] = []
         for scalar in lineRevision.unicodeScalars {
-            for index in patterns.indices where patterns[index].advance(with: scalar) {
-                let keyword = patterns[index].keyword
-                guard matchedKeywordsForRevision.insert(keyword).inserted,
-                      !previouslyMatchedKeywords.contains(keyword)
-                else {
-                    continue
-                }
-                events.append(
-                    KeywordMatchEvent(
-                        entryID: entryID,
-                        keyword: keyword,
-                        line: lineRevision,
-                        timestamp: timestamp
-                    )
+            for normalizedScalar in normalizedScalars(for: scalar) {
+                append(
+                    normalizedScalar,
+                    in: lineRevision,
+                    at: timestamp,
+                    previouslyMatchedKeywords: previouslyMatchedKeywords,
+                    events: &events
                 )
             }
         }
@@ -61,22 +54,15 @@ struct KeywordMatcher: Sendable {
         at timestamp: Date
     ) -> [KeywordMatchEvent] {
         var events: [KeywordMatchEvent] = []
-        for index in patterns.indices {
-            guard patterns[index].advance(with: scalar) else {
-                continue
-            }
-            let keyword = patterns[index].keyword
-            guard matchedKeywordsForRevision.insert(keyword).inserted else { continue }
-            events.append(
-                KeywordMatchEvent(
-                    entryID: entryID,
-                    keyword: keyword,
-                    line: lineRevision,
-                    timestamp: timestamp
-                )
+        for normalizedScalar in normalizedScalars(for: scalar) {
+            append(
+                normalizedScalar,
+                in: lineRevision,
+                at: timestamp,
+                previouslyMatchedKeywords: nil,
+                events: &events
             )
         }
-        priorRevision = lineRevision
         return events
     }
 
@@ -96,6 +82,36 @@ struct KeywordMatcher: Sendable {
         }
     }
 
+    private mutating func append(
+        _ scalar: Unicode.Scalar,
+        in lineRevision: String,
+        at timestamp: Date,
+        previouslyMatchedKeywords: Set<String>?,
+        events: inout [KeywordMatchEvent]
+    ) {
+        for index in patterns.indices where patterns[index].advance(with: scalar) {
+            let keyword = patterns[index].keyword
+            guard matchedKeywordsForRevision.insert(keyword).inserted,
+                  previouslyMatchedKeywords?.contains(keyword) != true
+            else {
+                continue
+            }
+            events.append(
+                KeywordMatchEvent(
+                    entryID: entryID,
+                    keyword: keyword,
+                    line: lineRevision,
+                    timestamp: timestamp
+                )
+            )
+        }
+    }
+
+    private func normalizedScalars(for scalar: Unicode.Scalar) -> [Unicode.Scalar] {
+        guard scalar.value > 0x7F else { return [scalar] }
+        return Array(String(scalar).decomposedStringWithCanonicalMapping.unicodeScalars)
+    }
+
     private struct Pattern: Sendable {
         let keyword: String
         let scalars: [Unicode.Scalar]
@@ -104,7 +120,7 @@ struct KeywordMatcher: Sendable {
 
         init(keyword: String) {
             self.keyword = keyword
-            scalars = Array(keyword.unicodeScalars)
+            scalars = Array(keyword.decomposedStringWithCanonicalMapping.unicodeScalars)
             prefixLengths = Self.makePrefixLengths(for: scalars)
         }
 

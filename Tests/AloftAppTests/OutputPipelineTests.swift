@@ -149,6 +149,18 @@ final class OutputPipelineTests: XCTestCase {
         )
     }
 
+    func testSessionSeparatorDeliversMatchCreatedByUTF8Finish() {
+        var pipeline = OutputPipeline(entryID: UUID(), keywords: ["�"], lineLimit: 20_000)
+
+        XCTAssertTrue(pipeline.consume(Data([0xE4, 0xBD]), at: .distantPast).matches.isEmpty)
+        let update = pipeline.insertSessionSeparator(at: Date(timeIntervalSince1970: 0))
+
+        XCTAssertEqual(update.matches.map(\.keyword), ["�"])
+        XCTAssertEqual(update.snapshot.latestMatch?.keyword, "�")
+        XCTAssertEqual(update.snapshot.latestMatch?.line, "�")
+        XCTAssertTrue(pipeline.consume(Data(), at: .distantPast).matches.isEmpty)
+    }
+
     func testSessionSeparatorDiscardsIncompleteANSIState() {
         var pipeline = OutputPipeline(entryID: UUID(), keywords: [], lineLimit: 20_000)
 
@@ -172,6 +184,32 @@ final class OutputPipelineTests: XCTestCase {
         let update = pipeline.consume(Data("ready\n".utf8), at: .distantPast)
 
         XCTAssertEqual(update.matches.map(\.keyword), ["ready"])
+    }
+
+    func testCanonicalEquivalentKeywordMatchesCombiningScalarAcrossReads() {
+        var pipeline = OutputPipeline(entryID: UUID(), keywords: ["café"], lineLimit: 20_000)
+
+        XCTAssertTrue(pipeline.consume(Data("cafe".utf8), at: .distantPast).matches.isEmpty)
+        let update = pipeline.consume(Data("\u{0301}\n".utf8), at: .distantPast)
+
+        XCTAssertEqual(update.matches.map(\.keyword), ["café"])
+        XCTAssertEqual(update.snapshot.committedLines, ["cafe\u{0301}"])
+    }
+
+    func testCanonicalEquivalentDecomposedKeywordMatchesComposedOutput() {
+        var pipeline = OutputPipeline(entryID: UUID(), keywords: ["cafe\u{0301}"], lineLimit: 20_000)
+
+        let update = pipeline.consume(Data("café\n".utf8), at: .distantPast)
+
+        XCTAssertEqual(update.matches.map(\.keyword), ["cafe\u{0301}"])
+    }
+
+    func testOverlappingPrefixAndSelfOverlappingKeywordsMatchOncePerRevision() {
+        var pipeline = OutputPipeline(entryID: UUID(), keywords: ["aba", "abab", "aba"], lineLimit: 20_000)
+
+        let update = pipeline.consume(Data("ababab\n".utf8), at: .distantPast)
+
+        XCTAssertEqual(update.matches.map(\.keyword), ["aba", "abab"])
     }
 
     func testBufferKeepsLatestTwentyThousandCommittedLines() {

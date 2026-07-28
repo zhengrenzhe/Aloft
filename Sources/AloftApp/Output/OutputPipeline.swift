@@ -39,9 +39,10 @@ struct OutputPipeline {
         return OutputUpdate(snapshot: snapshot, matches: events)
     }
 
-    mutating func insertSessionSeparator(at timestamp: Date) {
-        var discardedEvents: [KeywordMatchEvent] = []
-        process(filter.consume(decoder.finish()), at: timestamp, events: &discardedEvents)
+    @discardableResult
+    mutating func insertSessionSeparator(at timestamp: Date) -> OutputUpdate {
+        var events: [KeywordMatchEvent] = []
+        process(filter.consume(decoder.finish()), at: timestamp, events: &events)
         if pendingCarriageReturn {
             pendingCarriageReturn = false
             commitCurrentLine()
@@ -59,6 +60,7 @@ struct OutputPipeline {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         appendCommittedLine("──── Session started \(formatter.string(from: timestamp)) ────")
+        return OutputUpdate(snapshot: snapshot, matches: events)
     }
 
     mutating func clear() {
