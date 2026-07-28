@@ -157,6 +157,105 @@ final class GhosttyServiceTests: XCTestCase {
         XCTAssertEqual(executionCount, 0)
     }
 
+    func testOpenShellResolvesDotToStandardizedAbsoluteCWD() throws {
+        let applicationURL = try makeApplication(version: "1.3.0")
+        var executedSource: String?
+        let service = GhosttyService(
+            applicationURL: applicationURL,
+            executeAppleScript: { source in
+                executedSource = source
+                return nil
+            }
+        )
+        let expectedPath = standardizedAbsolutePath(for: ".")
+
+        try service.openShell(cwd: ".")
+
+        XCTAssertTrue(
+            executedSource?.contains(
+                "set initial working directory of cfg to \"\(expectedPath)\""
+            ) == true
+        )
+        XCTAssertFalse(
+            executedSource?.contains(
+                "set initial working directory of cfg to \".\""
+            ) == true
+        )
+    }
+
+    func testOpenShellRejectsMissingRelativeCWDUsingItsAbsolutePath() throws {
+        let applicationURL = try makeApplication(version: "1.3.0")
+        let relativePath = "missing-\(UUID().uuidString)"
+        let expectedPath = standardizedAbsolutePath(for: relativePath)
+        var executionCount = 0
+        let service = GhosttyService(
+            applicationURL: applicationURL,
+            executeAppleScript: { _ in
+                executionCount += 1
+                return nil
+            }
+        )
+
+        XCTAssertThrowsError(try service.openShell(cwd: relativePath)) {
+            error in
+            XCTAssertEqual(
+                error as? GhosttyServiceError,
+                .invalidWorkingDirectory(expectedPath)
+            )
+        }
+        XCTAssertEqual(executionCount, 0)
+    }
+
+    func testOpenShellDoesNotExpandTildeInRelativeCWD() throws {
+        let applicationURL = try makeApplication(version: "1.3.0")
+        let relativePath = "~/missing-\(UUID().uuidString)"
+        let expectedPath =
+            "\(FileManager.default.currentDirectoryPath)/\(relativePath)"
+        var executionCount = 0
+        let service = GhosttyService(
+            applicationURL: applicationURL,
+            executeAppleScript: { _ in
+                executionCount += 1
+                return nil
+            }
+        )
+
+        XCTAssertThrowsError(try service.openShell(cwd: relativePath)) {
+            error in
+            XCTAssertEqual(
+                error as? GhosttyServiceError,
+                .invalidWorkingDirectory(expectedPath)
+            )
+        }
+        XCTAssertEqual(executionCount, 0)
+    }
+
+    func testOpenShellPreservesAbsoluteUnicodeCWD() throws {
+        let applicationURL = try makeApplication(version: "1.3.0")
+        let cwd = newTemporaryRoot()
+            .appendingPathComponent("目录-e\u{301}", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: cwd,
+            withIntermediateDirectories: true
+        )
+        var executedSource: String?
+        let service = GhosttyService(
+            applicationURL: applicationURL,
+            executeAppleScript: { source in
+                executedSource = source
+                return nil
+            }
+        )
+
+        try service.openShell(cwd: cwd.path)
+
+        XCTAssertTrue(
+            executedSource?.contains(
+                "set initial working directory of cfg to \"\(cwd.path)\""
+            ) == true
+        )
+    }
+
     func testOpenShellRejectsUnavailableApplicationWithoutExecutingAppleScript() {
         let missingURL = newTemporaryRoot()
             .appendingPathComponent("Missing.app", isDirectory: true)
@@ -299,5 +398,18 @@ final class GhosttyServiceTests: XCTestCase {
         )
         temporaryRoots.append(root)
         return root
+    }
+
+    private func standardizedAbsolutePath(for path: String) -> String {
+        let currentDirectoryURL = URL(
+            fileURLWithPath: FileManager.default.currentDirectoryPath,
+            isDirectory: true
+        )
+        return URL(
+            fileURLWithPath: path,
+            relativeTo: currentDirectoryURL
+        )
+        .standardizedFileURL
+        .path
     }
 }

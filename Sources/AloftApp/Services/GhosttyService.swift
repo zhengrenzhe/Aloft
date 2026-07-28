@@ -135,16 +135,31 @@ struct GhosttyService {
             throw GhosttyServiceError.unsupported(version)
         }
 
+        guard !cwd.isEmpty else {
+            throw GhosttyServiceError.invalidWorkingDirectory(cwd)
+        }
+        let currentDirectoryURL = URL(
+            fileURLWithPath: fileManager.currentDirectoryPath,
+            isDirectory: true
+        )
+        let cwdURL: URL
+        if cwd.first == "/" {
+            cwdURL = URL(fileURLWithPath: cwd)
+        } else {
+            cwdURL = currentDirectoryURL.appendingPathComponent(cwd)
+        }
+        let resolvedCWD = cwdURL.standardizedFileURL.path
+
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(
-            atPath: cwd,
+            atPath: resolvedCWD,
             isDirectory: &isDirectory
         ), isDirectory.boolValue else {
-            throw GhosttyServiceError.invalidWorkingDirectory(cwd)
+            throw GhosttyServiceError.invalidWorkingDirectory(resolvedCWD)
         }
 
         let errorDictionary = executeAppleScript(
-            Self.appleScriptSource(cwd: cwd)
+            Self.appleScriptSource(cwd: resolvedCWD)
         )
         if let errorDictionary {
             throw GhosttyServiceError.appleScript(
