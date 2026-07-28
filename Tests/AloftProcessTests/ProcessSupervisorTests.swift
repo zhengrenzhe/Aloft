@@ -403,6 +403,69 @@ final class ProcessSupervisorTests: XCTestCase {
         XCTAssertEqual(current.liveness, .running)
     }
 
+    func testStopPreservesExitResultStoredByConcurrentRefresh() async throws {
+        let supervisor = ProcessSupervisor(
+            probeInterval: .seconds(5)
+        )
+        let recorder = DataRecorder()
+        let entry = fixtureEntry(
+            command: "trap 'echo MONOTONIC_STOP_SUSPENDED' TERM; "
+                + "trap 'exit 7' USR1; "
+                + "/bin/sh -c 'trap \"\" HUP TERM USR1; "
+                + "echo MONOTONIC_DESCENDANT_READY; exec sleep 30' & "
+                + "child=$!; while true; do wait $child; done"
+        )
+
+        let started = try await supervisor.start(entry: entry) { data in
+            Task { await recorder.append(data) }
+        }
+        let pid = try XCTUnwrap(started.pid)
+        let pgid = try XCTUnwrap(started.processGroupID)
+        defer { cleanupProcessGroup(pid: pid, pgid: pgid) }
+        let descendantReady = await recorder.waitForText(
+            "MONOTONIC_DESCENDANT_READY",
+            timeout: .seconds(2)
+        )
+        XCTAssertTrue(descendantReady)
+
+        let stopTask = Task {
+            try await supervisor.stop(
+                entryID: entry.id,
+                timeout: .seconds(2)
+            )
+        }
+        defer { stopTask.cancel() }
+        let stopSuspended = await recorder.waitForText(
+            "MONOTONIC_STOP_SUSPENDED",
+            timeout: .seconds(2)
+        )
+        XCTAssertTrue(stopSuspended)
+
+        XCTAssertEqual(Darwin.kill(pid, SIGUSR1), 0)
+        let concurrentlyRefreshed = try await waitForSnapshot(
+            supervisor: supervisor,
+            entryID: entry.id,
+            timeout: .seconds(2)
+        ) {
+            $0.exitResult == .exited(code: 7)
+        }
+        XCTAssertEqual(
+            concurrentlyRefreshed.exitResult,
+            .exited(code: 7)
+        )
+        XCTAssertEqual(concurrentlyRefreshed.liveness, .running)
+
+        let result = try await stopTask.value
+        guard case let .timedOut(snapshot) = result else {
+            return XCTFail("Expected stop timeout, got \(result)")
+        }
+        XCTAssertEqual(snapshot.exitResult, .exited(code: 7))
+
+        let subsequent = try await supervisor.refresh(entryID: entry.id)
+        XCTAssertEqual(subsequent.exitResult, .exited(code: 7))
+        XCTAssertEqual(subsequent.liveness, .running)
+    }
+
     func testRestartDoesNotConsumeReplacementGenerationDuringAwait() async throws {
         let supervisor = ProcessSupervisor(
             probeInterval: .seconds(1)

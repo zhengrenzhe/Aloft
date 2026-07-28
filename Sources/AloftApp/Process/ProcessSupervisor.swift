@@ -230,6 +230,15 @@ actor ProcessSupervisor {
     private func refreshCapturedProcess(
         _ captured: inout CapturedProcess
     ) throws -> ProcessSnapshot {
+        if captured.exitResult == nil,
+           let record = records[captured.entryID],
+           record.generation == captured.generation,
+           record.pid == captured.pid,
+           record.processGroupID == captured.processGroupID,
+           record.managedProcess === captured.managedProcess {
+            captured.exitResult = record.exitResult
+        }
+
         captured.exitResult = try waitForLeader(
             pid: captured.pid,
             existingResult: captured.exitResult
@@ -260,7 +269,9 @@ actor ProcessSupervisor {
             return
         }
 
-        record.exitResult = captured.exitResult
+        if record.exitResult == nil {
+            record.exitResult = captured.exitResult
+        }
         record.liveness = liveness
         if liveness == .stopped {
             record.managedProcess = nil
