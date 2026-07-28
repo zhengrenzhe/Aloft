@@ -692,7 +692,7 @@ private func assertImmediateStopTimeout(
     let recorder = DataRecorder()
     let entry = fixtureEntry(
         command: "trap '' TERM; echo \(marker); "
-            + "while true; do sleep 30; done"
+            + "exec sleep 30"
     )
     let started = try await supervisor.start(entry: entry) { data in
         Task { await recorder.append(data) }
