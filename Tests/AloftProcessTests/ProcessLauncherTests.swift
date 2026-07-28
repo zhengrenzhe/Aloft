@@ -28,26 +28,57 @@ final class ProcessLauncherTests: XCTestCase {
 
     func testKernelProbeAndSIGTERMAffectWholeGroup() throws {
         let process = try ProcessLauncher.launch(
-            command: "sleep 30 & wait",
+            command: "(trap '' HUP; exec sleep 30) & child_pid=$!; "
+                + "printf 'child_pid=%d ALOFT_CHILD_READY\\n' \"$child_pid\"; "
+                + "exec sleep 30",
             cwd: "/tmp"
         )
+        var backgroundPID: pid_t?
         defer {
-            try? ProcessLauncher.signalProcessGroup(process.processGroupID, signal: SIGKILL)
-            close(process.masterFileDescriptor)
-            _ = try? ProcessLauncher.wait(pid: process.pid, noHang: false)
+            cleanupProcessGroup(process, backgroundPID: backgroundPID)
         }
 
+        let readyOutput = try readUntilContains(
+            fd: process.masterFileDescriptor,
+            marker: "ALOFT_CHILD_READY",
+            timeout: 2
+        )
+        let pidToken = readyOutput
+            .split(whereSeparator: \.isWhitespace)
+            .first { $0.hasPrefix("child_pid=") }
+        let childPID = try XCTUnwrap(
+            pidToken.flatMap {
+                pid_t($0.dropFirst("child_pid=".count))
+            }
+        )
+        backgroundPID = childPID
+
+        XCTAssertNotEqual(childPID, process.pid)
+        XCTAssertEqual(getpgid(childPID), process.processGroupID)
+        let leaderExecedSleep = try waitUntil(timeout: 2) {
+            try executableName(pid: process.pid) == "sleep"
+        }
+        XCTAssertTrue(leaderExecedSleep, "group leader did not exec sleep")
+        guard leaderExecedSleep else {
+            return
+        }
         XCTAssertTrue(try ProcessLauncher.processGroupExists(process.processGroupID))
         try ProcessLauncher.signalProcessGroup(process.processGroupID, signal: SIGTERM)
-        var waitResult = ChildWaitResult.running
-        XCTAssertTrue(waitUntil(timeout: 2) {
-            if let current = try? ProcessLauncher.wait(pid: process.pid, noHang: true),
-               current != .running {
-                waitResult = current
-            }
-            return (try? ProcessLauncher.processGroupExists(process.processGroupID)) == false
+
+        XCTAssertEqual(
+            try waitForChildExit(pid: process.pid, timeout: 2),
+            .signaled(signal: SIGTERM)
+        )
+        let backgroundGone = try waitUntil(timeout: 2) {
+            try processIsGone(childPID)
+        }
+        XCTAssertTrue(backgroundGone, "background child \(childPID) survived SIGTERM")
+        guard backgroundGone else {
+            return
+        }
+        XCTAssertTrue(try waitUntil(timeout: 2) {
+            try ProcessLauncher.processGroupExists(process.processGroupID) == false
         })
-        XCTAssertEqual(waitResult, .signaled(signal: SIGTERM))
     }
 
     func testMissingCWDReportsChangeDirectoryPhase() {
@@ -139,15 +170,196 @@ private func readUntilEOFOrTimeout(fd: Int32, timeout: TimeInterval) throws -> S
     throw posixError(ETIMEDOUT)
 }
 
-private func waitUntil(timeout: TimeInterval, condition: () -> Bool) -> Bool {
+private func readUntilContains(
+    fd: Int32,
+    marker: String,
+    timeout: TimeInterval
+) throws -> String {
+    let deadline = Date().addingTimeInterval(timeout)
+    var bytes: [UInt8] = []
+    var buffer = [UInt8](repeating: 0, count: 4_096)
+
+    while Date() < deadline {
+        let remaining = max(0, deadline.timeIntervalSinceNow)
+        var descriptor = pollfd(
+            fd: fd,
+            events: Int16(POLLIN | POLLHUP | POLLERR),
+            revents: 0
+        )
+        let pollResult = poll(
+            &descriptor,
+            1,
+            Int32(min(remaining * 1_000, TimeInterval(Int32.max)))
+        )
+
+        if pollResult == -1 {
+            if errno == EINTR {
+                continue
+            }
+            throw posixError(errno)
+        }
+        if pollResult == 0 {
+            break
+        }
+
+        let bytesRead = buffer.withUnsafeMutableBytes {
+            read(fd, $0.baseAddress, $0.count)
+        }
+        if bytesRead > 0 {
+            bytes.append(contentsOf: buffer.prefix(bytesRead))
+            let output = String(decoding: bytes, as: UTF8.self)
+            if output.contains(marker) {
+                return output
+            }
+            continue
+        }
+        if bytesRead == 0 {
+            throw posixError(EPIPE)
+        }
+        if errno == EINTR || errno == EAGAIN {
+            continue
+        }
+        throw posixError(errno)
+    }
+
+    throw posixError(ETIMEDOUT)
+}
+
+private func waitForChildExit(
+    pid: pid_t,
+    timeout: TimeInterval
+) throws -> ChildWaitResult {
+    var result = ChildWaitResult.running
+    let completed = try waitUntil(timeout: timeout) {
+        result = try ProcessLauncher.wait(pid: pid, noHang: true)
+        return result != .running
+    }
+    guard completed else {
+        throw posixError(ETIMEDOUT)
+    }
+    return result
+}
+
+private func processIsGone(_ pid: pid_t) throws -> Bool {
+    if Darwin.kill(pid, 0) == 0 {
+        return false
+    }
+
+    switch errno {
+    case ESRCH:
+        return true
+    case EPERM:
+        return false
+    default:
+        throw posixError(errno)
+    }
+}
+
+private func executableName(pid: pid_t) throws -> String? {
+    var path = [CChar](repeating: 0, count: 4_096)
+    let length = proc_pidpath(pid, &path, UInt32(path.count))
+    if length > 0 {
+        let executablePath = path.withUnsafeBufferPointer {
+            String(cString: $0.baseAddress!)
+        }
+        return URL(fileURLWithPath: executablePath).lastPathComponent
+    }
+    if errno == ESRCH {
+        return nil
+    }
+    throw posixError(errno)
+}
+
+private func cleanupProcessGroup(
+    _ process: LaunchedProcess,
+    backgroundPID: pid_t?
+) {
+    let killResult = Darwin.killpg(process.processGroupID, SIGKILL)
+    let killError = killResult == -1 ? errno : 0
+    print(
+        "cleanup killpg pgid=\(process.processGroupID) "
+            + "result=\(killResult) errno=\(killError)"
+    )
+    XCTAssertTrue(
+        killResult == 0 || (killResult == -1 && killError == ESRCH),
+        "cleanup killpg failed with errno \(killError)"
+    )
+    close(process.masterFileDescriptor)
+
+    var status: Int32 = 0
+    var waitError: Int32?
+    let leaderHandled = waitUntil(timeout: 2) {
+        let result = Darwin.waitpid(process.pid, &status, WNOHANG)
+        if result == process.pid {
+            return true
+        }
+        if result == 0 || (result == -1 && errno == EINTR) {
+            return false
+        }
+        if result == -1 && errno == ECHILD {
+            return true
+        }
+        waitError = errno
+        return true
+    }
+    XCTAssertNil(waitError, "cleanup waitpid failed with errno \(waitError ?? 0)")
+    XCTAssertTrue(leaderHandled, "cleanup timed out reaping leader \(process.pid)")
+
+    if let backgroundPID {
+        let observedGroup = Darwin.getpgid(backgroundPID)
+        if observedGroup == process.processGroupID {
+            let childKillResult = Darwin.kill(backgroundPID, SIGKILL)
+            let childKillError = childKillResult == -1 ? errno : 0
+            print(
+                "cleanup kill child pid=\(backgroundPID) "
+                    + "result=\(childKillResult) errno=\(childKillError)"
+            )
+            XCTAssertTrue(
+                childKillResult == 0
+                    || (childKillResult == -1 && childKillError == ESRCH),
+                "cleanup child kill failed with errno \(childKillError)"
+            )
+        } else if observedGroup == -1 {
+            XCTAssertEqual(
+                errno,
+                ESRCH,
+                "cleanup getpgid failed with unexpected errno \(errno)"
+            )
+        }
+
+        let backgroundGone = waitUntil(timeout: 2) {
+            if Darwin.kill(backgroundPID, 0) == 0 {
+                return false
+            }
+            return errno == ESRCH
+        }
+        XCTAssertTrue(
+            backgroundGone,
+            "cleanup left background child \(backgroundPID)"
+        )
+    }
+
+    let groupGone = waitUntil(timeout: 2) {
+        if Darwin.killpg(process.processGroupID, 0) == 0 {
+            return false
+        }
+        return errno == ESRCH
+    }
+    XCTAssertTrue(groupGone, "cleanup left process group \(process.processGroupID)")
+}
+
+private func waitUntil(
+    timeout: TimeInterval,
+    condition: () throws -> Bool
+) rethrows -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
-        if condition() {
+        if try condition() {
             return true
         }
         usleep(10_000)
     }
-    return condition()
+    return try condition()
 }
 
 private func posixError(_ code: Int32) -> NSError {
