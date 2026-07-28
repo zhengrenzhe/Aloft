@@ -35,10 +35,6 @@ struct OutputPipeline {
         var events: [KeywordMatchEvent] = []
         let plainText = filter.consume(decoder.consume(data))
         process(plainText, at: timestamp, events: &events)
-        record(
-            matcher.flushTrailingCharacter(in: currentLine, at: timestamp),
-            in: &events
-        )
 
         return OutputUpdate(snapshot: snapshot, matches: events)
     }
@@ -88,8 +84,10 @@ struct OutputPipeline {
     }
 
     private mutating func process(_ plainText: String, at timestamp: Date, events: inout [KeywordMatchEvent]) {
+        var textRun = ""
         for scalar in plainText.unicodeScalars {
             if pendingCarriageReturn {
+                flush(&textRun, at: timestamp, events: &events)
                 if scalar.value == 0x0A {
                     pendingCarriageReturn = false
                     record(matcher.finishRevision(in: currentLine, at: timestamp), in: &events)
@@ -102,18 +100,29 @@ struct OutputPipeline {
 
             switch scalar.value {
             case 0x0D:
+                flush(&textRun, at: timestamp, events: &events)
                 pendingCarriageReturn = true
             case 0x0A:
+                flush(&textRun, at: timestamp, events: &events)
                 record(matcher.finishRevision(in: currentLine, at: timestamp), in: &events)
                 commitCurrentLine()
                 resetCurrentLineRevision()
             default:
-                currentLine.unicodeScalars.append(scalar)
-                let newEvents = matcher.append(scalar, in: currentLine, at: timestamp)
-                events.append(contentsOf: newEvents)
-                latestMatch = newEvents.last ?? latestMatch
+                textRun.unicodeScalars.append(scalar)
             }
         }
+        flush(&textRun, at: timestamp, events: &events)
+    }
+
+    private mutating func flush(
+        _ textRun: inout String,
+        at timestamp: Date,
+        events: inout [KeywordMatchEvent]
+    ) {
+        guard !textRun.isEmpty else { return }
+        currentLine.append(contentsOf: textRun)
+        record(matcher.append(textRun, in: currentLine, at: timestamp), in: &events)
+        textRun = ""
     }
 
     private mutating func resolvePendingCarriageReturn(

@@ -10,9 +10,10 @@ struct KeywordMatchEvent: Equatable, Sendable {
 struct KeywordMatcher: Sendable {
     let entryID: UUID
     let keywords: [String]
-    private var matchedKeywordsForRevision: Set<String> = []
     private var priorRevision = ""
     private var trailingCharacter = ""
+    private var committedPresence: Set<String> = []
+    private var speculativePresence: Set<String> = []
     private var patterns: [Pattern]
 
     init(entryID: UUID, keywords: [String]) {
@@ -30,79 +31,40 @@ struct KeywordMatcher: Sendable {
     mutating func matches(in lineRevision: String, at timestamp: Date) -> [KeywordMatchEvent] {
         guard lineRevision != priorRevision else { return [] }
 
-        let previouslyMatchedKeywords = matchedKeywordsForRevision
-        matchedKeywordsForRevision.removeAll()
+        let oldPresence = presence
         resetStreamingState()
-        var events: [KeywordMatchEvent] = []
         for character in lineRevision {
-            appendCommitted(
-                character,
-                in: lineRevision,
-                at: timestamp,
-                previouslyMatchedKeywords: previouslyMatchedKeywords,
-                events: &events
-            )
+            advanceCommitted(character)
         }
         priorRevision = lineRevision
-        return events
+        return events(for: presence.subtracting(oldPresence), line: lineRevision, at: timestamp)
     }
 
-    mutating func append(
-        _ scalar: Unicode.Scalar,
-        in lineRevision: String,
-        at timestamp: Date
-    ) -> [KeywordMatchEvent] {
-        var events: [KeywordMatchEvent] = []
-        let candidateCharacters = Array(trailingCharacter + String(scalar))
-        guard let latestCharacter = candidateCharacters.last else { return events }
+    mutating func append(_ text: String, in lineRevision: String, at timestamp: Date) -> [KeywordMatchEvent] {
+        guard !text.isEmpty else { return [] }
 
-        if candidateCharacters.count > 1 {
-            for character in candidateCharacters.dropLast() {
-                appendCommitted(
-                    character,
-                    in: lineRevision,
-                    at: timestamp,
-                    previouslyMatchedKeywords: nil,
-                    events: &events
-                )
-            }
+        let oldPresence = presence
+        let candidateCharacters = Array(trailingCharacter + text)
+        guard let latestCharacter = candidateCharacters.last else { return [] }
+
+        for character in candidateCharacters.dropLast() {
+            advanceCommitted(character)
         }
         trailingCharacter = String(latestCharacter)
-        return events
-    }
-
-    mutating func flushTrailingCharacter(
-        in lineRevision: String,
-        at timestamp: Date
-    ) -> [KeywordMatchEvent] {
-        guard let character = trailingCharacter.first else { return [] }
-
-        var events: [KeywordMatchEvent] = []
-        appendSpeculative(
-            character,
-            in: lineRevision,
-            at: timestamp,
-            events: &events
+        speculativePresence = Set(
+            patterns.compactMap { $0.matchesTrailing(latestCharacter) ? $0.keyword : nil }
         )
-        return events
+        return events(for: presence.subtracting(oldPresence), line: lineRevision, at: timestamp)
     }
 
-    mutating func finishRevision(
-        in lineRevision: String,
-        at timestamp: Date
-    ) -> [KeywordMatchEvent] {
-        guard let character = trailingCharacter.first else { return [] }
-
+    mutating func finishRevision(in lineRevision: String, at timestamp: Date) -> [KeywordMatchEvent] {
+        let oldPresence = presence
+        if let character = trailingCharacter.first {
+            advanceCommitted(character)
+        }
         trailingCharacter = ""
-        var events: [KeywordMatchEvent] = []
-        appendCommitted(
-            character,
-            in: lineRevision,
-            at: timestamp,
-            previouslyMatchedKeywords: nil,
-            events: &events
-        )
-        return events
+        speculativePresence.removeAll()
+        return events(for: presence.subtracting(oldPresence), line: lineRevision, at: timestamp)
     }
 
     mutating func reset() {
@@ -110,73 +72,39 @@ struct KeywordMatcher: Sendable {
     }
 
     mutating func resetRevision() {
-        matchedKeywordsForRevision.removeAll()
         priorRevision = ""
         resetStreamingState()
     }
 
+    private var presence: Set<String> {
+        committedPresence.union(speculativePresence)
+    }
+
     private mutating func resetStreamingState() {
         trailingCharacter = ""
+        committedPresence.removeAll()
+        speculativePresence.removeAll()
         for index in patterns.indices {
             patterns[index].reset()
         }
     }
 
-    private mutating func appendCommitted(
-        _ character: Character,
-        in lineRevision: String,
-        at timestamp: Date,
-        previouslyMatchedKeywords: Set<String>?,
-        events: inout [KeywordMatchEvent]
-    ) {
+    private mutating func advanceCommitted(_ character: Character) {
         for index in patterns.indices where patterns[index].advanceCommitted(with: character) {
-            record(
-                patterns[index].keyword,
-                in: lineRevision,
-                at: timestamp,
-                previouslyMatchedKeywords: previouslyMatchedKeywords,
-                events: &events
-            )
+            committedPresence.insert(patterns[index].keyword)
         }
     }
 
-    private mutating func appendSpeculative(
-        _ character: Character,
-        in lineRevision: String,
-        at timestamp: Date,
-        events: inout [KeywordMatchEvent]
-    ) {
-        for pattern in patterns where pattern.matchesTrailing(character) {
-            record(
-                pattern.keyword,
-                in: lineRevision,
-                at: timestamp,
-                previouslyMatchedKeywords: nil,
-                events: &events
-            )
-        }
-    }
-
-    private mutating func record(
-        _ keyword: String,
-        in lineRevision: String,
-        at timestamp: Date,
-        previouslyMatchedKeywords: Set<String>?,
-        events: inout [KeywordMatchEvent]
-    ) {
-        guard matchedKeywordsForRevision.insert(keyword).inserted,
-              previouslyMatchedKeywords?.contains(keyword) != true
-        else {
-            return
-        }
-        events.append(
-            KeywordMatchEvent(
+    private func events(for addedKeywords: Set<String>, line: String, at timestamp: Date) -> [KeywordMatchEvent] {
+        patterns.compactMap { pattern in
+            guard addedKeywords.contains(pattern.keyword) else { return nil }
+            return KeywordMatchEvent(
                 entryID: entryID,
-                keyword: keyword,
-                line: lineRevision,
+                keyword: pattern.keyword,
+                line: line,
                 timestamp: timestamp
             )
-        )
+        }
     }
 
     private struct Pattern: Sendable {

@@ -54,6 +54,33 @@ final class OutputPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.consume(Data("ready".utf8), at: .distantPast).matches.map(\.keyword), ["ready"])
     }
 
+    func testCombiningTailPresenceCanDisappearAndReappearAcrossReads() {
+        var pipeline = OutputPipeline(entryID: UUID(), keywords: ["e"], lineLimit: 20_000)
+
+        XCTAssertEqual(pipeline.consume(Data("e".utf8), at: .distantPast).matches.map(\.keyword), ["e"])
+        XCTAssertTrue(pipeline.consume(Data("\u{0301}".utf8), at: .distantPast).matches.isEmpty)
+        XCTAssertEqual(pipeline.consume(Data("e".utf8), at: .distantPast).matches.map(\.keyword), ["e"])
+    }
+
+    func testZWJTailPresenceCanDisappearAndReappearAcrossReads() {
+        var pipeline = OutputPipeline(entryID: UUID(), keywords: ["👩"], lineLimit: 20_000)
+
+        XCTAssertEqual(pipeline.consume(Data("👩".utf8), at: .distantPast).matches.map(\.keyword), ["👩"])
+        XCTAssertTrue(pipeline.consume(Data("\u{200D}".utf8), at: .distantPast).matches.isEmpty)
+        XCTAssertTrue(pipeline.consume(Data("💻".utf8), at: .distantPast).matches.isEmpty)
+        XCTAssertEqual(pipeline.consume(Data("👩".utf8), at: .distantPast).matches.map(\.keyword), ["👩"])
+    }
+
+    func testRegionalIndicatorTailPresenceCanDisappearAndReappearAcrossReads() {
+        let regionalU = "\u{1F1FA}"
+        let regionalS = "\u{1F1F8}"
+        var pipeline = OutputPipeline(entryID: UUID(), keywords: [regionalU], lineLimit: 20_000)
+
+        XCTAssertEqual(pipeline.consume(Data(regionalU.utf8), at: .distantPast).matches.map(\.keyword), [regionalU])
+        XCTAssertTrue(pipeline.consume(Data(regionalS.utf8), at: .distantPast).matches.isEmpty)
+        XCTAssertEqual(pipeline.consume(Data(regionalU.utf8), at: .distantPast).matches.map(\.keyword), [regionalU])
+    }
+
     func testKeywordIsDeduplicatedWithinAnUnchangedLineRevision() {
         var pipeline = OutputPipeline(entryID: UUID(), keywords: ["ready"], lineLimit: 20_000)
 
@@ -286,6 +313,26 @@ final class OutputPipelineTests: XCTestCase {
                 Set(expected),
                 "line: \(line)"
             )
+        }
+    }
+
+    func testCrossReadTransitionDifferentialMatchesFinalCharacterPresence() {
+        let cases: [(line: String, keyword: String)] = [
+            ("e\u{0301}e", "e"),
+            ("👩\u{200D}💻👩", "👩"),
+            ("\u{1F1FA}\u{1F1F8}\u{1F1FA}", "\u{1F1FA}"),
+            ("a\u{0315}\u{0300}", "a\u{0300}\u{0315}"),
+        ]
+
+        for testCase in cases {
+            var pipeline = OutputPipeline(entryID: UUID(), keywords: [testCase.keyword], lineLimit: 20_000)
+            var events: [KeywordMatchEvent] = []
+            for scalar in testCase.line.unicodeScalars {
+                events.append(contentsOf: pipeline.consume(Data(String(scalar).utf8), at: .distantPast).matches)
+            }
+            events.append(contentsOf: pipeline.consume(Data("\n".utf8), at: .distantPast).matches)
+
+            XCTAssertEqual(!events.isEmpty, testCase.line.contains(testCase.keyword), "line: \(testCase.line)")
         }
     }
 
