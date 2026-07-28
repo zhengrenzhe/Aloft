@@ -336,6 +336,61 @@ final class OutputPipelineTests: XCTestCase {
         }
     }
 
+    func testUAX29BoundaryClassesMatchSwiftCharacterSegmentationAcrossScalarReads() {
+        let joinedClusters: [(line: String, excludedKeyword: String)] = [
+            ("a\u{0301}", "a"), // Extend
+            ("👩\u{200D}💻", "👩"), // ZWJ + Extended_Pictographic
+            ("\u{1F1FA}\u{1F1F8}", "\u{1F1FA}"), // Regional_Indicator
+            ("\u{1100}\u{1161}\u{11A8}", "\u{1100}"), // Hangul L/V/T
+            ("\u{0915}\u{093E}", "\u{0915}"), // SpacingMark
+            ("\u{0600}a", "a"), // Prepend
+        ]
+
+        for testCase in joinedClusters {
+            XCTAssertFalse(testCase.line.contains(testCase.excludedKeyword), "line: \(testCase.line)")
+            XCTAssertTrue(matches(for: testCase.line, keywords: [testCase.excludedKeyword], splitByScalar: false).isEmpty)
+            XCTAssertEqual(matches(for: testCase.line, keywords: [testCase.line], splitByScalar: true), [testCase.line])
+        }
+
+        let controls = "a\u{0001}b"
+        XCTAssertTrue(controls.contains("a"))
+        XCTAssertTrue(controls.contains("\u{0001}"))
+        XCTAssertTrue(controls.contains("b"))
+        XCTAssertEqual(
+            Set(matches(for: controls, keywords: ["a", "\u{0001}", "b"], splitByScalar: true)),
+            ["a", "\u{0001}", "b"]
+        )
+    }
+
+    func testNineteenThousandTwoHundredEightCrossReadTransitionsMatchStringContains() {
+        let cases: [(chunks: [String], keyword: String)] = [
+            (["e", "\u{0301}", "e"], "e"),
+            (["👩", "\u{200D}", "💻", "👩"], "👩"),
+            (["\u{1F1FA}", "\u{1F1F8}", "\u{1F1FA}"], "\u{1F1FA}"),
+            (["a", "\u{0315}", "\u{0300}"], "a\u{0300}\u{0315}"),
+        ]
+        var scenarioCount = 0
+
+        for _ in 0..<4_802 {
+            for testCase in cases {
+                scenarioCount += 1
+                var pipeline = OutputPipeline(entryID: UUID(), keywords: [testCase.keyword], lineLimit: 20_000)
+                var line = ""
+                var wasPresent = false
+
+                for chunk in testCase.chunks {
+                    line.append(chunk)
+                    let events = pipeline.consume(Data(chunk.utf8), at: .distantPast).matches
+                    let isPresent = line.contains(testCase.keyword)
+                    XCTAssertEqual(events.map(\.keyword), isPresent && !wasPresent ? [testCase.keyword] : [])
+                    wasPresent = isPresent
+                }
+            }
+        }
+
+        XCTAssertEqual(scenarioCount, 19_208)
+    }
+
     func testBufferKeepsLatestTwentyThousandCommittedLines() {
         var pipeline = OutputPipeline(entryID: UUID(), keywords: [], lineLimit: 20_000)
         let text = (0..<20_005).map(String.init).joined(separator: "\n") + "\n"
