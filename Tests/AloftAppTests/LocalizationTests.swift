@@ -34,6 +34,48 @@ final class LocalizationTests: XCTestCase {
         )
     }
 
+    func testPackagedResourceBundleWinsWithoutSwiftPMFallback()
+        throws {
+        let temporaryRoot = FileManager.default
+            .temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        defer {
+            try? FileManager.default.removeItem(
+                at: temporaryRoot
+            )
+        }
+        let resourceURL = temporaryRoot
+            .appendingPathComponent("Contents")
+            .appendingPathComponent("Resources")
+        try FileManager.default.createDirectory(
+            at: resourceURL,
+            withIntermediateDirectories: true
+        )
+        let packagedBundleURL = resourceURL
+            .appendingPathComponent(
+                "Aloft_AloftApp.bundle"
+            )
+        try FileManager.default.copyItem(
+            at: L10n.bundle.bundleURL,
+            to: packagedBundleURL
+        )
+        var fallbackCalled = false
+
+        let resolved = L10n.resolveBundle(
+            mainResourceURL: resourceURL,
+            fallback: {
+                fallbackCalled = true
+                return .main
+            }
+        )
+
+        XCTAssertFalse(fallbackCalled)
+        XCTAssertEqual(
+            resolved.bundleURL.standardizedFileURL,
+            packagedBundleURL.standardizedFileURL
+        )
+    }
+
     func testEveryLocalizationHasTheCompleteEnglishKeySet() throws {
         let english = try localization("en")
         XCTAssertFalse(english.isEmpty)

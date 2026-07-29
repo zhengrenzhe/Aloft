@@ -178,7 +178,8 @@ struct MenuBarContent: View {
         if let entryID {
             model.selectEntry(entryID)
         }
-        openWindow(id: "management")
-        NSApp.activate(ignoringOtherApps: true)
+        ManagementWindowPresenter().present {
+            openWindow(id: "management")
+        }
     }
 }

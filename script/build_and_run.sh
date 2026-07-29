@@ -115,18 +115,25 @@ request_existing_app_to_quit() {
     return
   fi
 
-  local osascript_error
-  osascript_error="$(
-    /usr/bin/osascript \
-      -e 'tell application id "com.bytedance.aloft" to quit' \
-      2>&1
-  )" || {
-    if [[ "$osascript_error" != *"(-600)"* ]]; then
-      echo "error: could not ask the existing $APP_NAME instance to quit:" >&2
-      echo "$osascript_error" >&2
+  local pid
+  local termination_result
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] || continue
+    termination_result="$(
+      /usr/bin/osascript \
+        -l JavaScript \
+        -e "ObjC.import(\"AppKit\"); $.NSRunningApplication.runningApplicationWithProcessIdentifier($pid).terminate" \
+        2>&1
+    )" || {
+      echo "error: could not ask $APP_NAME PID $pid to quit:" >&2
+      echo "$termination_result" >&2
+      exit 1
+    }
+    if [[ "$termination_result" != "true" ]]; then
+      echo "error: $APP_NAME PID $pid rejected the AppKit terminate request." >&2
       exit 1
     fi
-  }
+  done < <(/usr/bin/pgrep -x "$APP_NAME" || true)
 
   local attempt
   for attempt in {1..60}; do
@@ -200,6 +207,15 @@ stage_app_bundle() {
     "$build_swiftterm_resource_bundle" \
     "$staged_resources/SwiftTerm_SwiftTerm.bundle"
 
+  if [[ ! -f "$staged_resources/Aloft_AloftApp.bundle/Info.plist" ]]; then
+    echo "error: staged app does not satisfy the SwiftPM Aloft resource bundle lookup." >&2
+    exit 1
+  fi
+  if [[ ! -f "$staged_resources/SwiftTerm_SwiftTerm.bundle/Shaders.metal" ]]; then
+    echo "error: staged app does not satisfy the SwiftTerm shader bundle lookup." >&2
+    exit 1
+  fi
+
   /bin/cat >"$staged_plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -258,27 +274,66 @@ PLIST
 
 open_app() {
   local bundle="${1:-$APP_BUNDLE}"
-  /usr/bin/open -n "$bundle"
+  local startup_log="${2:-}"
+  if [[ -n "$startup_log" ]]; then
+    /usr/bin/open \
+      -n \
+      --env ALOFT_VERIFY_STARTUP=1 \
+      --stderr "$startup_log" \
+      "$bundle"
+  else
+    /usr/bin/open -n "$bundle"
+  fi
 }
 
 verify_app_started() {
   local expected_binary="${1:-$APP_BINARY}"
+  local startup_log="${2:-}"
   local attempt
-  for attempt in {1..50}; do
-    if process_is_running_from "$expected_binary"; then
+  for attempt in {1..100}; do
+    if process_is_running_from "$expected_binary" \
+      && /usr/bin/grep -Fqx \
+        "ALOFT_STARTUP_READY" \
+        "$startup_log"; then
       echo "$APP_NAME is running from $expected_binary"
       return
     fi
     /bin/sleep 0.1
   done
-  if process_is_running_from "$expected_binary"; then
+  if process_is_running_from "$expected_binary" \
+    && /usr/bin/grep -Fqx \
+      "ALOFT_STARTUP_READY" \
+      "$startup_log"; then
     echo "$APP_NAME is running from $expected_binary"
     return
   fi
 
-  echo "error: $APP_NAME did not appear within 5 seconds after launch." >&2
+  echo "error: $APP_NAME did not become ready within 10 seconds after launch." >&2
   echo "Run '$0 --logs' to inspect startup logs." >&2
-  exit 1
+  return 1
+}
+
+open_and_verify_app() {
+  local bundle="${1:-$APP_BUNDLE}"
+  local expected_binary="${2:-$APP_BINARY}"
+  local startup_log
+  local status
+
+  startup_log="$(/usr/bin/mktemp /private/tmp/aloft-startup.XXXXXX.log)"
+  open_app "$bundle" "$startup_log"
+  if verify_app_started "$expected_binary" "$startup_log"; then
+    /bin/rm -f "$startup_log"
+    return
+  else
+    status=$?
+  fi
+
+  if [[ -s "$startup_log" ]]; then
+    echo "Startup stderr:" >&2
+    /bin/cat "$startup_log" >&2
+  fi
+  /bin/rm -f "$startup_log"
+  return "$status"
 }
 
 process_is_running_from() {
@@ -389,19 +444,18 @@ case "$MODE" in
       --predicate "subsystem == \"$BUNDLE_ID\""
     ;;
   verify)
-    open_app
-    verify_app_started
+    open_and_verify_app
     ;;
   release)
-    open_app
-    verify_app_started
+    open_and_verify_app
     ;;
   stage-release)
     echo "Staged release app at $APP_BUNDLE"
     ;;
   install-release)
     install_app_bundle
-    open_app "$INSTALLED_APP_BUNDLE"
-    verify_app_started "$INSTALLED_APP_BINARY"
+    open_and_verify_app \
+      "$INSTALLED_APP_BUNDLE" \
+      "$INSTALLED_APP_BINARY"
     ;;
 esac

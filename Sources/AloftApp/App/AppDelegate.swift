@@ -1,6 +1,24 @@
 import AppKit
 import Foundation
 
+struct StartupReadinessReporter {
+    private static let marker = Data(
+        "ALOFT_STARTUP_READY\n".utf8
+    )
+
+    static func reportIfRequested(
+        environment: [String: String],
+        write: (Data) -> Void
+    ) {
+        guard environment[
+            "ALOFT_VERIFY_STARTUP"
+        ] == "1" else {
+            return
+        }
+        write(marker)
+    }
+}
+
 enum ApplicationTerminationDisposition: Equatable, Sendable {
     case terminateNow
     case beginDeferredTermination
@@ -174,6 +192,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         NSApp.setActivationPolicy(.accessory)
+        let environment = ProcessInfo.processInfo.environment
+        DispatchQueue.main.async {
+            StartupReadinessReporter.reportIfRequested(
+                environment: environment,
+                write: { data in
+                    FileHandle.standardError.write(data)
+                }
+            )
+        }
     }
 
     func applicationShouldTerminate(

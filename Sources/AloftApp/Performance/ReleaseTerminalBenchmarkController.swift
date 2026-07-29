@@ -76,7 +76,7 @@ final class ReleaseTerminalBenchmarkController {
         window.center()
 
         NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
         window.makeKeyAndOrderFront(nil)
 
         self.surface = surface

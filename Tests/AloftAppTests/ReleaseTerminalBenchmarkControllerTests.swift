@@ -47,4 +47,31 @@ final class ReleaseTerminalBenchmarkControllerTests:
             )
         )
     }
+
+    func testStartupReadinessReporterRequiresOptIn() {
+        var writes: [Data] = []
+
+        StartupReadinessReporter.reportIfRequested(
+            environment: [:],
+            write: { writes.append($0) }
+        )
+
+        XCTAssertEqual(writes, [])
+    }
+
+    func testStartupReadinessReporterWritesOneStableMarker() {
+        var writes: [Data] = []
+
+        StartupReadinessReporter.reportIfRequested(
+            environment: [
+                "ALOFT_VERIFY_STARTUP": "1",
+            ],
+            write: { writes.append($0) }
+        )
+
+        XCTAssertEqual(
+            writes,
+            [Data("ALOFT_STARTUP_READY\n".utf8)]
+        )
+    }
 }

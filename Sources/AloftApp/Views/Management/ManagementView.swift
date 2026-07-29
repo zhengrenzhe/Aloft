@@ -19,6 +19,9 @@ struct ManagementView: View {
         } detail: {
             EntryDetailView(model: model)
         }
+        .background {
+            ManagementWindowActivationBridge()
+        }
         .toolbar(removing: .sidebarToggle)
         .alert(
             "Aloft",
