@@ -46,6 +46,22 @@ static void terminate_and_reap_child(pid_t pid) {
     reap_child(pid);
 }
 
+static int set_close_on_exec(int fd) {
+    int flags;
+    do {
+        flags = fcntl(fd, F_GETFD);
+    } while (flags == -1 && errno == EINTR);
+    if (flags == -1) {
+        return -1;
+    }
+
+    int result;
+    do {
+        result = fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+    } while (result == -1 && errno == EINTR);
+    return result;
+}
+
 aloft_launch_result aloft_launch(const char *command, const char *cwd) {
     int master_fd = -1;
     int slave_fd = -1;
@@ -54,13 +70,21 @@ aloft_launch_result aloft_launch(const char *command, const char *cwd) {
     if (openpty(&master_fd, &slave_fd, NULL, NULL, NULL) == -1) {
         return failure(ALOFT_LAUNCH_OPEN_PTY, errno);
     }
+    if (set_close_on_exec(master_fd) == -1 ||
+        set_close_on_exec(slave_fd) == -1) {
+        int error_code = errno;
+        close(master_fd);
+        close(slave_fd);
+        return failure(ALOFT_LAUNCH_OPEN_PTY, error_code);
+    }
     if (pipe(error_pipe) == -1) {
         int error_code = errno;
         close(master_fd);
         close(slave_fd);
         return failure(ALOFT_LAUNCH_ERROR_PIPE, error_code);
     }
-    if (fcntl(error_pipe[1], F_SETFD, FD_CLOEXEC) == -1) {
+    if (set_close_on_exec(error_pipe[0]) == -1 ||
+        set_close_on_exec(error_pipe[1]) == -1) {
         int error_code = errno;
         close(error_pipe[0]);
         close(error_pipe[1]);

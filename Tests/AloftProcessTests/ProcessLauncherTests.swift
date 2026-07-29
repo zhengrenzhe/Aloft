@@ -26,6 +26,69 @@ final class ProcessLauncherTests: XCTestCase {
         XCTAssertEqual(process.pid, process.processGroupID)
     }
 
+    func testReturnedPTYMasterClosesOnExec() throws {
+        let process = try ProcessLauncher.launch(
+            command: "exec sleep 30",
+            cwd: "/tmp"
+        )
+        defer {
+            try? ProcessLauncher.signalProcessGroup(
+                process.processGroupID,
+                signal: SIGKILL
+            )
+            close(process.masterFileDescriptor)
+            _ = try? ProcessLauncher.wait(pid: process.pid, noHang: false)
+        }
+
+        let descriptorFlags = fcntl(
+            process.masterFileDescriptor,
+            F_GETFD
+        )
+        XCTAssertNotEqual(descriptorFlags, -1)
+        XCTAssertEqual(descriptorFlags & FD_CLOEXEC, FD_CLOEXEC)
+    }
+
+    func testLaterLaunchCannotUseEarlierPTYMaster() throws {
+        let earlier = try ProcessLauncher.launch(
+            command: "exec sleep 30",
+            cwd: "/tmp"
+        )
+        defer {
+            try? ProcessLauncher.signalProcessGroup(
+                earlier.processGroupID,
+                signal: SIGKILL
+            )
+            close(earlier.masterFileDescriptor)
+            _ = try? ProcessLauncher.wait(pid: earlier.pid, noHang: false)
+        }
+
+        let later = try ProcessLauncher.launch(
+            command: """
+                if { : >&\(earlier.masterFileDescriptor) } 2>/dev/null; then
+                    print -r -- ALOFT_EARLIER_MASTER_VISIBLE
+                else
+                    print -r -- ALOFT_EARLIER_MASTER_CLOSED
+                fi
+                """,
+            cwd: "/tmp"
+        )
+        defer {
+            try? ProcessLauncher.signalProcessGroup(
+                later.processGroupID,
+                signal: SIGKILL
+            )
+            close(later.masterFileDescriptor)
+            _ = try? ProcessLauncher.wait(pid: later.pid, noHang: false)
+        }
+
+        let output = try readUntilEOFOrTimeout(
+            fd: later.masterFileDescriptor,
+            timeout: 2
+        )
+        XCTAssertTrue(output.contains("ALOFT_EARLIER_MASTER_CLOSED"))
+        XCTAssertFalse(output.contains("ALOFT_EARLIER_MASTER_VISIBLE"))
+    }
+
     func testKernelProbeAndSIGTERMAffectWholeGroup() throws {
         let process = try ProcessLauncher.launch(
             command: #"/bin/sh -c 'trap "" HUP; "#
