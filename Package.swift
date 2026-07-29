@@ -6,6 +6,12 @@ let package = Package(
     defaultLocalization: "en",
     platforms: [.macOS(.v14)],
     products: [.executable(name: "Aloft", targets: ["AloftApp"])],
+    dependencies: [
+        .package(
+            url: "https://github.com/migueldeicaza/SwiftTerm",
+            exact: "1.15.0"
+        ),
+    ],
     targets: [
         .target(
             name: "AloftProcess",
@@ -13,14 +19,26 @@ let package = Package(
         ),
         .executableTarget(
             name: "AloftApp",
-            dependencies: ["AloftProcess"],
+            dependencies: [
+                "AloftProcess",
+                .product(
+                    name: "SwiftTerm",
+                    package: "SwiftTerm"
+                ),
+            ],
             resources: [
                 .process("Resources"),
             ]
         ),
         .testTarget(
             name: "AloftAppTests",
-            dependencies: ["AloftApp"],
+            dependencies: [
+                "AloftApp",
+                .product(
+                    name: "SwiftTerm",
+                    package: "SwiftTerm"
+                ),
+            ],
             resources: [
                 .copy("Fixtures/Unicode17/GraphemeBreakTest.txt"),
                 .copy("Fixtures/Unicode17/NormalizationTest.txt"),
