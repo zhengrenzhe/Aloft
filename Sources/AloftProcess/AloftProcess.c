@@ -220,6 +220,25 @@ int aloft_signal_process_group(pid_t pgid, int signal_number) {
     return -errno;
 }
 
+int aloft_set_window_size(
+    int fd,
+    uint16_t rows,
+    uint16_t columns,
+    uint16_t pixel_width,
+    uint16_t pixel_height
+) {
+    struct winsize size = {
+        .ws_row = rows,
+        .ws_col = columns,
+        .ws_xpixel = pixel_width,
+        .ws_ypixel = pixel_height,
+    };
+    if (ioctl(fd, TIOCSWINSZ, &size) == 0) {
+        return 0;
+    }
+    return -errno;
+}
+
 pid_t aloft_waitpid(pid_t pid, int *status, int options) {
     return waitpid(pid, status, options);
 }

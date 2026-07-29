@@ -33,6 +33,13 @@ aloft_launch_result aloft_launch(
 );
 int aloft_process_group_exists(pid_t pgid);
 int aloft_signal_process_group(pid_t pgid, int signal_number);
+int aloft_set_window_size(
+    int fd,
+    uint16_t rows,
+    uint16_t columns,
+    uint16_t pixel_width,
+    uint16_t pixel_height
+);
 pid_t aloft_waitpid(pid_t pid, int *status, int options);
 
 #endif

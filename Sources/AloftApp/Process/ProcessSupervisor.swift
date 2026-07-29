@@ -99,7 +99,7 @@ actor ProcessSupervisor {
             cwd: entry.cwd,
             shell: entry.shell
         )
-        let managedProcess = ManagedProcess(
+        let managedProcess = try ManagedProcess(
             masterFileDescriptor: launched.masterFileDescriptor,
             onOutput: onOutput
         )

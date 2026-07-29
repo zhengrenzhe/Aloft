@@ -9,7 +9,7 @@ final class ManagedProcessTests: XCTestCase {
 
         weak var weakProcess: ManagedProcess?
         do {
-            let process = ManagedProcess(
+            let process = try ManagedProcess(
                 masterFileDescriptor: descriptors.read,
                 onOutput: { _ in }
             )
@@ -31,7 +31,7 @@ final class ManagedProcessTests: XCTestCase {
         defer { Darwin.close(descriptors.write) }
 
         weak var weakProcess: ManagedProcess?
-        var process: ManagedProcess? = ManagedProcess(
+        var process: ManagedProcess? = try ManagedProcess(
             masterFileDescriptor: descriptors.read,
             onOutput: { _ in }
         )
@@ -65,6 +65,142 @@ final class ManagedProcessTests: XCTestCase {
             "deinit double-closed a reused file descriptor"
         )
     }
+
+    func testWriteReachesSlaveAndResizeChangesKernelWinsize()
+        async throws {
+        let pair = try makeRawPTY()
+        let process = try ManagedProcess(
+            masterFileDescriptor: pair.master,
+            onOutput: { _ in }
+        )
+        defer {
+            process.close()
+            Darwin.close(pair.slave)
+        }
+
+        try await process.write(Data("reply".utf8))
+
+        XCTAssertEqual(
+            try readExactly(
+                fileDescriptor: pair.slave,
+                count: 5
+            ),
+            Data("reply".utf8)
+        )
+
+        let size = try XCTUnwrap(
+            TerminalSize(
+                columns: 120,
+                rows: 40,
+                pixelWidth: 1_200,
+                pixelHeight: 800
+            )
+        )
+        try await process.resize(size)
+
+        XCTAssertEqual(
+            try readWinsize(fileDescriptor: pair.slave),
+            size
+        )
+    }
+}
+
+private func makeRawPTY() throws -> (master: Int32, slave: Int32) {
+    var master: Int32 = -1
+    var slave: Int32 = -1
+    guard Darwin.openpty(
+        &master,
+        &slave,
+        nil,
+        nil,
+        nil
+    ) == 0 else {
+        throw NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(errno)
+        )
+    }
+
+    var attributes = termios()
+    guard Darwin.tcgetattr(slave, &attributes) == 0 else {
+        let error = errno
+        Darwin.close(master)
+        Darwin.close(slave)
+        throw NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(error)
+        )
+    }
+    Darwin.cfmakeraw(&attributes)
+    guard Darwin.tcsetattr(
+        slave,
+        TCSANOW,
+        &attributes
+    ) == 0 else {
+        let error = errno
+        Darwin.close(master)
+        Darwin.close(slave)
+        throw NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(error)
+        )
+    }
+    return (master, slave)
+}
+
+private func readExactly(
+    fileDescriptor: Int32,
+    count: Int
+) throws -> Data {
+    var result = Data()
+    var buffer = [UInt8](repeating: 0, count: count)
+
+    while result.count < count {
+        let bytesRead = buffer.withUnsafeMutableBytes { bytes in
+            Darwin.read(
+                fileDescriptor,
+                bytes.baseAddress,
+                count - result.count
+            )
+        }
+        if bytesRead > 0 {
+            result.append(contentsOf: buffer.prefix(bytesRead))
+            continue
+        }
+        if bytesRead == -1 && errno == EINTR {
+            continue
+        }
+        let error = bytesRead == 0 ? EIO : errno
+        throw NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(error)
+        )
+    }
+    return result
+}
+
+private func readWinsize(
+    fileDescriptor: Int32
+) throws -> TerminalSize {
+    var windowSize = winsize()
+    guard Darwin.ioctl(
+        fileDescriptor,
+        TIOCGWINSZ,
+        &windowSize
+    ) == 0 else {
+        throw NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(errno)
+        )
+    }
+    return try XCTUnwrap(
+        TerminalSize(
+            columns: Int(windowSize.ws_col),
+            rows: Int(windowSize.ws_row),
+            pixelWidth: Int(windowSize.ws_xpixel),
+            pixelHeight: Int(windowSize.ws_ypixel)
+        )
+    )
 }
 
 private func makeNonblockingPipe() throws -> (read: Int32, write: Int32) {
