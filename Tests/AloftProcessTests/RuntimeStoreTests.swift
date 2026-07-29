@@ -408,6 +408,14 @@ final class RuntimeStoreTests: XCTestCase {
             )
         }
         identities.append(contentsOf: firstIdentities)
+        for identity in firstIdentities {
+            let didExec = try await waitForExecutableName(
+                pid: identity.pid,
+                name: "sleep",
+                timeout: .seconds(2)
+            )
+            XCTAssertTrue(didExec)
+        }
 
         let restarts = await runtime.restartAll(
             entries,
