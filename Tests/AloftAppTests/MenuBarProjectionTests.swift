@@ -152,6 +152,126 @@ final class MenuBarProjectionTests: XCTestCase {
         )
         XCTAssertEqual(projection.latestMatch?.title.count, 30)
     }
+
+    func testProjectionHidesMatchForUnknownEntryID() {
+        let configuredEntry = fixtureEntry(
+            id: UUID(
+                uuidString: "00000000-0000-0000-0000-000000000011"
+            )!,
+            name: "Configured",
+            order: 0
+        )
+        let group = fixtureGroup(
+            id: UUID(
+                uuidString: "00000000-0000-0000-0000-000000000001"
+            )!,
+            name: "Commands",
+            order: 0,
+            entries: [configuredEntry]
+        )
+        let unknownEntryID = UUID(
+            uuidString: "00000000-0000-0000-0000-000000000099"
+        )!
+
+        let projection = MenuBarProjection(
+            groups: [group],
+            liveEntryIDs: [],
+            latestMatch: KeywordMatchEvent(
+                entryID: unknownEntryID,
+                keyword: "ready",
+                line: "STALE READY",
+                timestamp: .distantPast
+            )
+        )
+
+        XCTAssertNil(projection.latestMatch)
+    }
+
+    func testProjectionKeepsMatchForConfiguredStoppedEntry() {
+        let entryID = UUID(
+            uuidString: "00000000-0000-0000-0000-000000000011"
+        )!
+        let group = fixtureGroup(
+            id: UUID(
+                uuidString: "00000000-0000-0000-0000-000000000001"
+            )!,
+            name: "Commands",
+            order: 0,
+            entries: [
+                fixtureEntry(
+                    id: entryID,
+                    name: "Stopped",
+                    order: 0
+                ),
+            ]
+        )
+
+        let projection = MenuBarProjection(
+            groups: [group],
+            liveEntryIDs: [],
+            latestMatch: KeywordMatchEvent(
+                entryID: entryID,
+                keyword: "ready",
+                line: "STOPPED READY",
+                timestamp: .distantPast
+            )
+        )
+
+        XCTAssertEqual(projection.latestMatch?.entryID, entryID)
+        XCTAssertEqual(projection.latestMatch?.title, "STOPPED READY")
+    }
+
+    @MainActor
+    func testProjectionHidesMatchAfterAppModelDeletesStoppedEntry() throws {
+        let entry = terminationEntry(
+            id: UUID(
+                uuidString: "00000000-0000-0000-0000-000000000011"
+            )!,
+            name: "Deleted"
+        )
+        let model = terminationModel(entries: [entry])
+        let groupID = try XCTUnwrap(model.orderedGroups.first?.id)
+        try model.deleteEntry(id: entry.id, in: groupID)
+
+        let projection = MenuBarProjection(
+            groups: model.orderedGroups,
+            liveEntryIDs: model.runtime.liveEntryIDs,
+            latestMatch: KeywordMatchEvent(
+                entryID: entry.id,
+                keyword: "ready",
+                line: "DELETED READY",
+                timestamp: .distantPast
+            )
+        )
+
+        XCTAssertNil(projection.latestMatch)
+    }
+
+    @MainActor
+    func testProjectionHidesMatchAfterAppModelDeletesMatchedGroup() throws {
+        let entry = terminationEntry(
+            id: UUID(
+                uuidString: "00000000-0000-0000-0000-000000000011"
+            )!,
+            name: "Deleted Group Entry"
+        )
+        let model = terminationModel(entries: [entry])
+        let groupID = try XCTUnwrap(model.orderedGroups.first?.id)
+        try model.deleteGroup(id: groupID)
+
+        let projection = MenuBarProjection(
+            groups: model.orderedGroups,
+            liveEntryIDs: model.runtime.liveEntryIDs,
+            latestMatch: KeywordMatchEvent(
+                entryID: entry.id,
+                keyword: "ready",
+                line: "DELETED GROUP READY",
+                timestamp: .distantPast
+            )
+        )
+
+        XCTAssertNil(projection.latestMatch)
+    }
 }
 
 final class ApplicationTerminationStateTests: XCTestCase {

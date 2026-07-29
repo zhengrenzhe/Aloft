@@ -34,6 +34,9 @@ struct MenuBarProjection: Equatable, Sendable {
         liveEntryIDs: Set<UUID>,
         latestMatch: KeywordMatchEvent?
     ) {
+        let configuredEntryIDs = Set(
+            groups.flatMap(\.entries).map(\.id)
+        )
         runningCount = liveEntryIDs.count
         groupMenus = groups
             .sorted(by: Self.groupPrecedes)
@@ -57,8 +60,11 @@ struct MenuBarProjection: Equatable, Sendable {
                     liveEntries: liveEntries
                 )
             }
-        self.latestMatch = latestMatch.map {
-            MenuBarMatchProjection(
+        self.latestMatch = latestMatch.flatMap {
+            guard configuredEntryIDs.contains($0.entryID) else {
+                return nil
+            }
+            return MenuBarMatchProjection(
                 entryID: $0.entryID,
                 title: Self.truncated($0.line)
             )
