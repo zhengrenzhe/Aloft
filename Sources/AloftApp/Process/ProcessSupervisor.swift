@@ -23,6 +23,7 @@ enum StopResult: Equatable, Sendable {
 
 enum ProcessSupervisorError: Error, Equatable, Sendable {
     case alreadyRunning
+    case staleGeneration
     case stopTimedOut
     case unknownEntry
 }
@@ -85,6 +86,7 @@ actor ProcessSupervisor {
 
     func start(
         entry: CommandEntry,
+        generation: UUID = UUID(),
         onOutput: @escaping OutputHandler
     ) throws -> ProcessSnapshot {
         if records[entry.id] != nil {
@@ -104,7 +106,7 @@ actor ProcessSupervisor {
             onOutput: onOutput
         )
         let record = Record(
-            generation: UUID(),
+            generation: generation,
             entryID: entry.id,
             pid: launched.pid,
             processGroupID: launched.processGroupID,
@@ -117,8 +119,49 @@ actor ProcessSupervisor {
         return record.snapshot
     }
 
+    func write(
+        entryID: UUID,
+        generation: UUID,
+        data: Data
+    ) async throws {
+        let managedProcess = try managedProcess(
+            entryID: entryID,
+            generation: generation
+        )
+        try await managedProcess.write(data)
+    }
+
+    func resize(
+        entryID: UUID,
+        generation: UUID,
+        size: TerminalSize
+    ) async throws {
+        let managedProcess = try managedProcess(
+            entryID: entryID,
+            generation: generation
+        )
+        try await managedProcess.resize(size)
+    }
+
     func refresh(entryID: UUID) throws -> ProcessSnapshot {
         try refreshRecord(entryID: entryID)
+    }
+
+    private func managedProcess(
+        entryID: UUID,
+        generation: UUID
+    ) throws -> ManagedProcess {
+        guard let record = records[entryID] else {
+            throw ProcessSupervisorError.unknownEntry
+        }
+        guard record.generation == generation else {
+            throw ProcessSupervisorError.staleGeneration
+        }
+        guard record.liveness == .running,
+              let managedProcess = record.managedProcess else {
+            throw ProcessSupervisorError.unknownEntry
+        }
+        return managedProcess
     }
 
     func stop(

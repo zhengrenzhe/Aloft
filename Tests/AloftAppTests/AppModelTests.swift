@@ -668,8 +668,14 @@ private actor ModelProcessClient {
 
     func client() -> RuntimeProcessClient {
         RuntimeProcessClient(
-            start: { entry, _ in
+            start: { entry, _, _ in
                 try await self.start(entryID: entry.id)
+            },
+            write: { _, _, _ in
+                throw ProcessSupervisorError.unknownEntry
+            },
+            resize: { _, _, _ in
+                throw ProcessSupervisorError.unknownEntry
             },
             stop: { entryID, _ in
                 try await self.stop(entryID: entryID)

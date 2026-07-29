@@ -5,6 +5,40 @@ import XCTest
 
 @MainActor
 final class RuntimeStoreConcurrencyTests: XCTestCase {
+    func testStartsPassDistinctGenerationsToProcessClient() async {
+        let fake = ControlledProcessSupervisor()
+        let entry = concurrencyEntry(name: "Generations")
+        await fake.enqueueStartSnapshot(
+            runningSnapshot(
+                entryID: entry.id,
+                pid: 91,
+                processGroupID: 91
+            )
+        )
+        await fake.enqueueStartSnapshot(
+            runningSnapshot(
+                entryID: entry.id,
+                pid: 92,
+                processGroupID: 92
+            )
+        )
+        let runtime = await makeRuntimeStore(fake)
+
+        let firstStart = await runtime.start(entry)
+        XCTAssertTrue(firstStart.isSuccess)
+        let stop = await runtime.stop(
+            entry,
+            timeout: .seconds(1)
+        )
+        XCTAssertTrue(stop.isSuccess)
+        let secondStart = await runtime.start(entry)
+        XCTAssertTrue(secondStart.isSuccess)
+
+        let generations = await fake.startedGenerations
+        XCTAssertEqual(generations.count, 2)
+        XCTAssertNotEqual(generations[0], generations[1])
+    }
+
     func testThreeOverlappingStartsSerializeAndPreserveDelayedSuccessfulOutput() async throws {
         let fake = ControlledProcessSupervisor()
         let firstGate = AsyncTestGate()
@@ -948,13 +982,35 @@ private actor ControlledProcessSupervisor {
     private(set) var refreshCallCount = 0
     private(set) var snapshotsCallCount = 0
     private(set) var events: [String] = []
+    private(set) var startedGenerations: [UUID] = []
+    private(set) var writes: [
+        (entryID: UUID, generation: UUID, data: Data)
+    ] = []
+    private(set) var resizes: [
+        (entryID: UUID, generation: UUID, size: TerminalSize)
+    ] = []
 
     func client() -> RuntimeProcessClient {
         RuntimeProcessClient(
-            start: { entry, onOutput in
+            start: { entry, generation, onOutput in
                 try await self.start(
                     entry: entry,
+                    generation: generation,
                     onOutput: onOutput.handler
+                )
+            },
+            write: { entryID, generation, data in
+                await self.recordWrite(
+                    entryID: entryID,
+                    generation: generation,
+                    data: data
+                )
+            },
+            resize: { entryID, generation, size in
+                await self.recordResize(
+                    entryID: entryID,
+                    generation: generation,
+                    size: size
                 )
             },
             stop: { entryID, timeout in
@@ -971,6 +1027,22 @@ private actor ControlledProcessSupervisor {
 
     func setStartGate(_ gate: AsyncTestGate, call: Int) {
         startGates[call] = gate
+    }
+
+    func recordWrite(
+        entryID: UUID,
+        generation: UUID,
+        data: Data
+    ) {
+        writes.append((entryID, generation, data))
+    }
+
+    func recordResize(
+        entryID: UUID,
+        generation: UUID,
+        size: TerminalSize
+    ) {
+        resizes.append((entryID, generation, size))
     }
 
     func enqueueStartSnapshot(_ snapshot: ProcessSnapshot) {
@@ -1019,9 +1091,11 @@ private actor ControlledProcessSupervisor {
 
     func start(
         entry: CommandEntry,
+        generation: UUID,
         onOutput: @escaping @Sendable (Data) -> Void
     ) async throws -> ProcessSnapshot {
         startCallCount += 1
+        startedGenerations.append(generation)
         let call = startCallCount
         events.append("start:\(call)")
         if let gate = startGates[call] {
@@ -1165,9 +1239,11 @@ private func makeGatedRealProcessClient(
     snapshotsGate: AsyncTestGate? = nil
 ) -> RuntimeProcessClient {
     RuntimeProcessClient(
-        start: { entry, outputHandler in
-            let snapshot = try await supervisor.start(entry: entry) {
-                data in
+        start: { entry, generation, outputHandler in
+            let snapshot = try await supervisor.start(
+                entry: entry,
+                generation: generation
+            ) { data in
                 outputHandler.handler(data)
                 Task {
                     await harness.recordOutput(data)
@@ -1178,6 +1254,20 @@ private func makeGatedRealProcessClient(
                 await startReturnGate.wait()
             }
             return snapshot
+        },
+        write: { entryID, generation, data in
+            try await supervisor.write(
+                entryID: entryID,
+                generation: generation,
+                data: data
+            )
+        },
+        resize: { entryID, generation, size in
+            try await supervisor.resize(
+                entryID: entryID,
+                generation: generation,
+                size: size
+            )
         },
         stop: { entryID, timeout in
             try await supervisor.stop(

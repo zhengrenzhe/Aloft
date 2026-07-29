@@ -18,8 +18,19 @@ struct RuntimeProcessClient: Sendable {
     typealias OutputHandler = @Sendable (Data) -> Void
     typealias StartOperation = @Sendable (
         CommandEntry,
+        UUID,
         RuntimeOutputHandler
     ) async throws -> ProcessSnapshot
+    typealias WriteOperation = @Sendable (
+        UUID,
+        UUID,
+        Data
+    ) async throws -> Void
+    typealias ResizeOperation = @Sendable (
+        UUID,
+        UUID,
+        TerminalSize
+    ) async throws -> Void
     typealias StopOperation = @Sendable (
         UUID,
         Duration
@@ -31,17 +42,23 @@ struct RuntimeProcessClient: Sendable {
     ) async throws -> [UUID: ProcessSnapshot]
 
     private let startOperation: StartOperation
+    private let writeOperation: WriteOperation
+    private let resizeOperation: ResizeOperation
     private let stopOperation: StopOperation
     private let refreshOperation: RefreshOperation
     private let snapshotsOperation: SnapshotsOperation
 
     init(
         start: @escaping StartOperation,
+        write: @escaping WriteOperation,
+        resize: @escaping ResizeOperation,
         stop: @escaping StopOperation,
         refresh: @escaping RefreshOperation,
         snapshots: @escaping SnapshotsOperation
     ) {
         startOperation = start
+        writeOperation = write
+        resizeOperation = resize
         stopOperation = stop
         refreshOperation = refresh
         snapshotsOperation = snapshots
@@ -49,10 +66,25 @@ struct RuntimeProcessClient: Sendable {
 
     init(supervisor: ProcessSupervisor) {
         self.init(
-            start: { entry, onOutput in
+            start: { entry, generation, onOutput in
                 try await supervisor.start(
                     entry: entry,
+                    generation: generation,
                     onOutput: onOutput.handler
+                )
+            },
+            write: { entryID, generation, data in
+                try await supervisor.write(
+                    entryID: entryID,
+                    generation: generation,
+                    data: data
+                )
+            },
+            resize: { entryID, generation, size in
+                try await supervisor.resize(
+                    entryID: entryID,
+                    generation: generation,
+                    size: size
                 )
             },
             stop: { entryID, timeout in
@@ -72,12 +104,30 @@ struct RuntimeProcessClient: Sendable {
 
     func start(
         entry: CommandEntry,
+        generation: UUID,
         onOutput: @escaping OutputHandler
     ) async throws -> ProcessSnapshot {
         try await startOperation(
             entry,
+            generation,
             RuntimeOutputHandler(handler: onOutput)
         )
+    }
+
+    func write(
+        entryID: UUID,
+        generation: UUID,
+        data: Data
+    ) async throws {
+        try await writeOperation(entryID, generation, data)
+    }
+
+    func resize(
+        entryID: UUID,
+        generation: UUID,
+        size: TerminalSize
+    ) async throws {
+        try await resizeOperation(entryID, generation, size)
     }
 
     func stop(
@@ -805,7 +855,10 @@ final class RuntimeStore {
         )
 
         do {
-            let snapshot = try await processClient.start(entry: entry) {
+            let snapshot = try await processClient.start(
+                entry: entry,
+                generation: nextGeneration
+            ) {
                 [weak self] data in
                 Task { @MainActor [weak self] in
                     self?.consume(
@@ -1319,6 +1372,10 @@ private func describeProcessError(_ error: Error) -> String {
         switch error {
         case .alreadyRunning:
             return L10n.string("The entry is already running.")
+        case .staleGeneration:
+            return L10n.string(
+                "The operation was superseded by a newer process generation."
+            )
         case .stopTimedOut:
             return L10n.string(
                 "The process group did not stop before the timeout."

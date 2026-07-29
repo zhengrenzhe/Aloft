@@ -4,6 +4,96 @@ import XCTest
 @testable import AloftApp
 
 final class ProcessSupervisorTests: XCTestCase {
+    func testCurrentGenerationCanWriteAndResizeButOldGenerationCannot()
+        async throws {
+        let supervisor = ProcessSupervisor()
+        let entry = fixtureEntry(
+            command: """
+            printf 'GENERATION_READY\n'
+            IFS= read -r line
+            printf 'input=%s\n' "$line"
+            exec sleep 30
+            """
+        )
+        let generation = UUID()
+        let recorder = DataRecorder()
+        let started = try await supervisor.start(
+            entry: entry,
+            generation: generation
+        ) { data in
+            Task { await recorder.append(data) }
+        }
+        let pid = try XCTUnwrap(started.pid)
+        let processGroupID = try XCTUnwrap(
+            started.processGroupID
+        )
+        defer {
+            cleanupProcessGroup(
+                pid: pid,
+                pgid: processGroupID
+            )
+        }
+        let receivedReady = await recorder.waitForText(
+            "GENERATION_READY",
+            timeout: .seconds(2)
+        )
+        XCTAssertTrue(receivedReady)
+
+        try await supervisor.resize(
+            entryID: entry.id,
+            generation: generation,
+            size: TerminalSize(
+                columns: 120,
+                rows: 40,
+                pixelWidth: 1_200,
+                pixelHeight: 800
+            )!
+        )
+        try await supervisor.write(
+            entryID: entry.id,
+            generation: generation,
+            data: Data("hello\n".utf8)
+        )
+
+        let receivedInput = await recorder.waitForText(
+            "input=hello",
+            timeout: .seconds(2)
+        )
+        XCTAssertTrue(receivedInput)
+
+        for operation in [
+            {
+                try await supervisor.write(
+                    entryID: entry.id,
+                    generation: UUID(),
+                    data: Data("stale\n".utf8)
+                )
+            },
+            {
+                try await supervisor.resize(
+                    entryID: entry.id,
+                    generation: UUID(),
+                    size: TerminalSize(
+                        columns: 90,
+                        rows: 30,
+                        pixelWidth: 900,
+                        pixelHeight: 600
+                    )!
+                )
+            },
+        ] {
+            do {
+                try await operation()
+                XCTFail("A stale generation operation must fail")
+            } catch {
+                XCTAssertEqual(
+                    error as? ProcessSupervisorError,
+                    .staleGeneration
+                )
+            }
+        }
+    }
+
     func testStartStreamsOutputAndRefreshUsesKernelGroupProbe() async throws {
         let supervisor = ProcessSupervisor()
         let recorder = DataRecorder()
