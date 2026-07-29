@@ -726,6 +726,7 @@ final class RuntimeStore {
             currentLine: "",
             latestMatch: nil
         )
+        entryRuntime.terminalSurface?.clear()
         if latestGlobalMatch?.entryID == entryID {
             latestGlobalMatch = nil
         }
@@ -857,10 +858,12 @@ final class RuntimeStore {
 
         let priorGeneration = runtimeGenerations[entry.id]
         let nextGeneration = UUID()
+        let sessionStartedAt = Date()
         installPendingOutputSession(
             for: entry,
             generation: nextGeneration,
-            retaining: entryRuntime.output
+            retaining: entryRuntime.output,
+            at: sessionStartedAt
         )
         let terminalSurface = prepareTerminalSession(
             entryRuntime: entryRuntime,
@@ -905,7 +908,7 @@ final class RuntimeStore {
             )
             terminalSurface?.promote(
                 generation: nextGeneration,
-                at: Date()
+                at: sessionStartedAt
             )
             entryRuntime.process = snapshot
             entryRuntime.lastError = nil
@@ -1072,7 +1075,8 @@ final class RuntimeStore {
     private func installPendingOutputSession(
         for entry: CommandEntry,
         generation: UUID,
-        retaining priorOutput: OutputSnapshot
+        retaining priorOutput: OutputSnapshot,
+        at timestamp: Date
     ) {
         var retainedLines = priorOutput.committedLines
         if !priorOutput.currentLine.isEmpty {
@@ -1084,7 +1088,7 @@ final class RuntimeStore {
             keywords: entry.keywords,
             lineLimit: 20_000
         )
-        let separator = pipeline.insertSessionSeparator(at: Date())
+        let separator = pipeline.insertSessionSeparator(at: timestamp)
         outputSessions[generation] = OutputSession(
             entryID: entry.id,
             pipeline: pipeline,
@@ -1112,11 +1116,18 @@ final class RuntimeStore {
                 entryRuntime.terminalSurface = createdSurface
                 entryRuntime.terminalRendererState =
                     createdSurface.rendererState
+                if case .unavailable =
+                        createdSurface.rendererState {
+                    entryRuntime.outputDisplayMode = .text
+                }
                 createdSurface.onRendererStateChange = {
                     [weak entryRuntime] rendererState in
                     Task { @MainActor in
                         entryRuntime?.terminalRendererState =
                             rendererState
+                        if case .unavailable = rendererState {
+                            entryRuntime?.outputDisplayMode = .text
+                        }
                     }
                 }
                 terminalSurface = createdSurface
@@ -1146,11 +1157,19 @@ final class RuntimeStore {
                             == generation else {
                         return
                     }
-                    try? await processClient.write(
-                        entryID: entryID,
-                        generation: generation,
-                        data: data
-                    )
+                    do {
+                        try await processClient.write(
+                            entryID: entryID,
+                            generation: generation,
+                            data: data
+                        )
+                    } catch {
+                        self.projectTerminalCallbackError(
+                            error,
+                            entryID: entryID,
+                            generation: generation
+                        )
+                    }
                 }
             },
             resizePTY: { [weak self] size, generation in
@@ -1160,14 +1179,47 @@ final class RuntimeStore {
                             == generation else {
                         return
                     }
-                    try? await processClient.resize(
-                        entryID: entryID,
-                        generation: generation,
-                        size: size
-                    )
+                    do {
+                        try await processClient.resize(
+                            entryID: entryID,
+                            generation: generation,
+                            size: size
+                        )
+                    } catch {
+                        self.projectTerminalCallbackError(
+                            error,
+                            entryID: entryID,
+                            generation: generation
+                        )
+                    }
                 }
             }
         )
+    }
+
+    private func projectTerminalCallbackError(
+        _ error: Error,
+        entryID: UUID,
+        generation: UUID
+    ) {
+        guard runtimeGenerations[entryID] == generation else {
+            return
+        }
+        if let supervisorError = error
+                as? ProcessSupervisorError {
+            switch supervisorError {
+            case .staleGeneration:
+                return
+            case .unknownEntry
+                where runtime(for: entryID).process.liveness
+                    == .stopped:
+                return
+            case .alreadyRunning, .stopTimedOut, .unknownEntry:
+                break
+            }
+        }
+        runtime(for: entryID).lastError =
+            describeProcessError(error)
     }
 
     private func discardPendingSession(

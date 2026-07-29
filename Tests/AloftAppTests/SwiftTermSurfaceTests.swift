@@ -121,6 +121,66 @@ final class SwiftTermSurfaceTests: XCTestCase {
         )
     }
 
+    func testRestartAddsOneSharedSeparatorAndPreservesHistory()
+        async {
+        let callbacks = TerminalCallbacksRecorder()
+        let surface = SwiftTermSurface(
+            callbacks: callbacks.callbacks
+        )
+        let firstGeneration = UUID()
+        let firstDate = Date(timeIntervalSince1970: 0)
+        surface.prepare(generation: firstGeneration)
+        surface.promote(
+            generation: firstGeneration,
+            at: firstDate
+        )
+        surface.feed(
+            Data("first history".utf8),
+            generation: firstGeneration
+        )
+        let secondGeneration = UUID()
+        let secondDate = Date(timeIntervalSince1970: 1)
+        surface.prepare(generation: secondGeneration)
+        surface.feed(
+            Data("second history".utf8),
+            generation: secondGeneration
+        )
+        surface.promote(
+            generation: secondGeneration,
+            at: secondDate
+        )
+
+        await surface.waitUntilIdle()
+
+        let text = visibleTerminalText(
+            surface.terminalViewForTesting.getTerminal()
+        )
+        XCTAssertTrue(
+            text.contains("first history"),
+            "Terminal text was \(text.debugDescription)"
+        )
+        XCTAssertTrue(
+            text.contains("second history"),
+            "Terminal text was \(text.debugDescription)"
+        )
+        XCTAssertEqual(
+            occurrences(
+                of: SessionSeparator.line(at: firstDate),
+                in: text
+            ),
+            1,
+            "Terminal text was \(text.debugDescription)"
+        )
+        XCTAssertEqual(
+            occurrences(
+                of: SessionSeparator.line(at: secondDate),
+                in: text
+            ),
+            1,
+            "Terminal text was \(text.debugDescription)"
+        )
+    }
+
     func testRendererStateMapsMetalAndFallbackOutcomes() {
         let callbacks = TerminalCallbacksRecorder()
         let metal = SwiftTermSurface(
@@ -311,4 +371,8 @@ private func visibleTerminalText(_ terminal: Terminal) -> String {
             )
         }
         .joined(separator: "\n")
+}
+
+private func occurrences(of needle: String, in text: String) -> Int {
+    text.components(separatedBy: needle).count - 1
 }

@@ -36,6 +36,12 @@ final class TerminalSurfaceRecorder: TerminalSurface, @unchecked Sendable {
     @MainActor
     init() {}
 
+    @MainActor
+    func publishRendererState(_ state: TerminalRendererState) {
+        rendererState = state
+        onRendererStateChange?(state)
+    }
+
     var events: [TerminalSurfaceEvent] {
         withLock { recordedEvents }
     }
@@ -189,6 +195,9 @@ actor ScriptedTerminalProcessClient {
             continuation: CheckedContinuation<Void, Never>
         )
     ] = []
+    private var writeError: ProcessSupervisorError?
+    private var resizeError: ProcessSupervisorError?
+    private var callbackAttemptCount = 0
 
     private(set) var startedGenerations: [UUID] = []
     private(set) var writes: [
@@ -212,14 +221,14 @@ actor ScriptedTerminalProcessClient {
                 )
             },
             write: { entryID, generation, data in
-                await self.recordWrite(
+                try await self.recordWrite(
                     entryID: entryID,
                     generation: generation,
                     data: data
                 )
             },
             resize: { entryID, generation, size in
-                await self.recordResize(
+                try await self.recordResize(
                     entryID: entryID,
                     generation: generation,
                     size: size
@@ -238,12 +247,20 @@ actor ScriptedTerminalProcessClient {
     }
 
     func waitForCallbackTasks(expectedCount: Int = 2) async {
-        guard writes.count + resizes.count < expectedCount else {
+        guard callbackAttemptCount < expectedCount else {
             return
         }
         await withCheckedContinuation { continuation in
             callbackWaiters.append((expectedCount, continuation))
         }
+    }
+
+    func setCallbackErrors(
+        write: ProcessSupervisorError?,
+        resize: ProcessSupervisorError?
+    ) {
+        writeError = write
+        resizeError = resize
     }
 
     private func start(
@@ -310,22 +327,30 @@ actor ScriptedTerminalProcessClient {
         entryID: UUID,
         generation: UUID,
         data: Data
-    ) {
+    ) throws {
+        callbackAttemptCount += 1
+        defer { resumeSatisfiedCallbackWaiters() }
+        if let writeError {
+            throw writeError
+        }
         writes.append((entryID, generation, data))
-        resumeSatisfiedCallbackWaiters()
     }
 
     private func recordResize(
         entryID: UUID,
         generation: UUID,
         size: TerminalSize
-    ) {
+    ) throws {
+        callbackAttemptCount += 1
+        defer { resumeSatisfiedCallbackWaiters() }
+        if let resizeError {
+            throw resizeError
+        }
         resizes.append((entryID, generation, size))
-        resumeSatisfiedCallbackWaiters()
     }
 
     private func resumeSatisfiedCallbackWaiters() {
-        let count = writes.count + resizes.count
+        let count = callbackAttemptCount
         var remaining: [
             (
                 expectedCount: Int,

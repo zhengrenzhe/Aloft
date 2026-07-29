@@ -201,20 +201,13 @@ final class SwiftTermSurface:
     }
 
     private func terminalSessionPrelude(at timestamp: Date) -> Data {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        let separator = L10n.format(
-            "──── Session started %@ ────",
-            formatter.string(from: timestamp)
-        )
         return Data(
             (
-                "\u{1b}[?1049l"
+                "\u{1b}7"
+                    + "\u{1b}[?1049l"
                     + "\u{1b}[!p"
                     + "\r\n"
-                    + separator
+                    + SessionSeparator.line(at: timestamp)
                     + "\r\n"
             ).utf8
         )

@@ -5,6 +5,162 @@ import XCTest
 
 @MainActor
 final class RuntimeStoreTests: XCTestCase {
+    func testClearOutputClearsTextAndTerminalWithoutStoppingProcess()
+        async {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(
+                    outputBeforeReturn: Data("visible".utf8)
+                ),
+            ]
+        )
+        let start = await fixture.runtime.start(fixture.entry)
+        XCTAssertTrue(start.isSuccess)
+
+        fixture.runtime.clearOutput(entryID: fixture.entry.id)
+
+        XCTAssertEqual(
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .output.displayText,
+            ""
+        )
+        XCTAssertTrue(fixture.surface.events.contains(.clear))
+        XCTAssertEqual(
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .process.liveness,
+            .running
+        )
+    }
+
+    func testUnavailableTerminalSelectsTextWithoutStoppingProcess()
+        async {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(
+                    outputBeforeReturn: Data("visible".utf8)
+                ),
+            ]
+        )
+        let start = await fixture.runtime.start(fixture.entry)
+        XCTAssertTrue(start.isSuccess)
+
+        fixture.surface.publishRendererState(
+            .unavailable("renderer unavailable")
+        )
+        let selectedText = await waitUntilMainActor(
+            timeout: .seconds(1)
+        ) {
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .outputDisplayMode == .text
+        }
+
+        XCTAssertTrue(selectedText)
+        XCTAssertEqual(
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .terminalRendererState,
+            .unavailable("renderer unavailable")
+        )
+        XCTAssertEqual(
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .process.liveness,
+            .running
+        )
+    }
+
+    func testCurrentGenerationTerminalWriteErrorProjectsLastError()
+        async throws {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(
+                    outputBeforeReturn: Data("visible".utf8)
+                ),
+            ]
+        )
+        let start = await fixture.runtime.start(fixture.entry)
+        XCTAssertTrue(start.isSuccess)
+        await fixture.process.setCallbackErrors(
+            write: .unknownEntry,
+            resize: nil
+        )
+        let generations = await fixture.process.startedGenerations
+        let generation = try XCTUnwrap(generations.first)
+        let callbacks = try XCTUnwrap(
+            fixture.surface.callbacks(for: generation)
+        )
+
+        callbacks.writeProtocolReply(
+            Data("reply".utf8),
+            generation
+        )
+        await fixture.process.waitForCallbackTasks(
+            expectedCount: 1
+        )
+        let projected = await waitUntilMainActor(
+            timeout: .seconds(1)
+        ) {
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .lastError
+                == L10n.string(
+                    "The entry has no managed process."
+                )
+        }
+
+        XCTAssertTrue(projected)
+        XCTAssertEqual(
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .process.liveness,
+            .running
+        )
+    }
+
+    func testStaleTerminalCallbackErrorsPreserveCurrentError()
+        async throws {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(
+                    outputBeforeReturn: Data("visible".utf8)
+                ),
+            ]
+        )
+        let start = await fixture.runtime.start(fixture.entry)
+        XCTAssertTrue(start.isSuccess)
+        await fixture.process.setCallbackErrors(
+            write: .staleGeneration,
+            resize: .staleGeneration
+        )
+        let generations = await fixture.process.startedGenerations
+        let generation = try XCTUnwrap(generations.first)
+        let callbacks = try XCTUnwrap(
+            fixture.surface.callbacks(for: generation)
+        )
+        fixture.runtime.runtime(for: fixture.entry.id)
+            .lastError = "retained error"
+
+        callbacks.writeProtocolReply(
+            Data("reply".utf8),
+            generation
+        )
+        callbacks.resizePTY(
+            TerminalSize(
+                columns: 90,
+                rows: 30,
+                pixelWidth: 900,
+                pixelHeight: 600
+            )!,
+            generation
+        )
+        await fixture.process.waitForCallbackTasks(
+            expectedCount: 2
+        )
+        await Task.yield()
+
+        XCTAssertEqual(
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .lastError,
+            "retained error"
+        )
+    }
+
     func testStartPromotesPendingTerminalBytesOnlyAfterLaunchSuccess()
         async {
         let fixture = await makeTerminalRuntimeFixture(

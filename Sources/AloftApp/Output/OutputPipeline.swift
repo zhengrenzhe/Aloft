@@ -57,15 +57,8 @@ struct OutputPipeline {
         matcher.resetRevision()
         filter = ANSITextFilter()
 
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         appendCommittedLine(
-            L10n.format(
-                "──── Session started %@ ────",
-                formatter.string(from: timestamp)
-            )
+            SessionSeparator.line(at: timestamp)
         )
         return OutputUpdate(snapshot: snapshot, matches: events)
     }
