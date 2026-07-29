@@ -25,4 +25,26 @@ final class WorkspaceConfigurationTests: XCTestCase {
 
         XCTAssertEqual(decoded, source)
     }
+
+    func testLegacyJSONWithoutShellUsesSystemDefaultShell() throws {
+        let data = Data(
+            """
+            {
+              "id": "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA",
+              "name": "Web",
+              "cwd": "/tmp/project",
+              "command": "npm run dev",
+              "keywords": [],
+              "order": 0
+            }
+            """.utf8
+        )
+
+        let entry = try JSONDecoder().decode(
+            CommandEntry.self,
+            from: data
+        )
+
+        XCTAssertEqual(entry.shell, ShellCatalog.systemDefaultShell)
+    }
 }

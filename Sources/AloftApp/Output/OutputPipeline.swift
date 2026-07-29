@@ -61,7 +61,12 @@ struct OutputPipeline {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        appendCommittedLine("──── Session started \(formatter.string(from: timestamp)) ────")
+        appendCommittedLine(
+            L10n.format(
+                "──── Session started %@ ────",
+                formatter.string(from: timestamp)
+            )
+        )
         return OutputUpdate(snapshot: snapshot, matches: events)
     }
 

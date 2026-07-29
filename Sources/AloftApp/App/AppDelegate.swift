@@ -96,9 +96,13 @@ struct ApplicationTerminationState: Sendable {
                 return "\(name) — PGID \(process.processGroupID)"
             }
         return TerminationAlertPresentation(
-            messageText: "Aloft Could Not Stop All Commands",
+            messageText: L10n.string(
+                "Aloft Could Not Stop All Commands"
+            ),
             informativeText: lines.isEmpty
-                ? "No process identity was available."
+                ? L10n.string(
+                    "No process identity was available."
+                )
                 : lines.joined(separator: "\n")
         )
     }
@@ -145,7 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.alertStyle = .warning
             alert.messageText = presentation.messageText
             alert.informativeText = presentation.informativeText
-            alert.addButton(withTitle: "OK")
+            alert.addButton(withTitle: L10n.string("OK"))
             alert.runModal()
         }
         super.init()

@@ -96,7 +96,8 @@ actor ProcessSupervisor {
 
         let launched = try ProcessLauncher.launch(
             command: entry.command,
-            cwd: entry.cwd
+            cwd: entry.cwd,
+            shell: entry.shell
         )
         let managedProcess = ManagedProcess(
             masterFileDescriptor: launched.masterFileDescriptor,

@@ -381,6 +381,49 @@ final class AppModelTests: XCTestCase {
         )
     }
 
+    func testStartGroupSkipsEntriesThatAreAlreadyRunning() async throws {
+        let fake = ModelProcessClient()
+        let fixture = try makeAppModel(
+            groupNamesAndEntryNames: [
+                ("Frontend", ["Running", "Stopped"])
+            ],
+            runtime: await makeRuntime(fake)
+        )
+        let group = fixture.model.workspace.configuration.groups[0]
+        let runningEntry = group.entries[0]
+        let stoppedEntry = group.entries[1]
+        await fake.enqueueStart(
+            runningSnapshot(entryID: runningEntry.id, pid: 715),
+            gate: nil
+        )
+        let initialStart = await fixture.model.runtime.start(
+            runningEntry
+        )
+        XCTAssertTrue(initialStart.isSuccess)
+        await fake.enqueueStart(
+            runningSnapshot(entryID: stoppedEntry.id, pid: 716),
+            gate: nil
+        )
+
+        let task = try XCTUnwrap(
+            fixture.model.startGroup(id: group.id)
+        )
+
+        XCTAssertEqual(
+            fixture.model.runtime.protectedEntryIDs,
+            [stoppedEntry.id]
+        )
+        let results = await task.value
+        XCTAssertEqual(results.map(\.entryID), [stoppedEntry.id])
+        XCTAssertTrue(results.allSatisfy(\.isSuccess))
+        let startCallCount = await fake.startCallCount
+        XCTAssertEqual(startCallCount, 2)
+        XCTAssertEqual(
+            fixture.model.runtime.liveEntryIDs,
+            Set(group.entries.map(\.id))
+        )
+    }
+
     func testScheduledRestartProtectsStoppedGapBeforeReplacementStarts() async throws {
         let fake = ModelProcessClient()
         let fixture = try makeAppModel(

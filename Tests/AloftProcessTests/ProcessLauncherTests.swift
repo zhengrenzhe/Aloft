@@ -4,6 +4,96 @@ import XCTest
 @testable import AloftApp
 
 final class ProcessLauncherTests: XCTestCase {
+    func testLaunchImportsInteractiveLoginShellEnvironmentWithoutManagedJobControl() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data(
+            "export ALOFT_ZSHRC_SENTINEL=loaded-from-zshrc\n".utf8
+        ).write(to: root.appendingPathComponent(".zshrc"))
+
+        let previousZDOTDIR = getenv("ZDOTDIR").map {
+            String(cString: $0)
+        }
+        XCTAssertEqual(setenv("ZDOTDIR", root.path, 1), 0)
+        defer {
+            if let previousZDOTDIR {
+                setenv("ZDOTDIR", previousZDOTDIR, 1)
+            } else {
+                unsetenv("ZDOTDIR")
+            }
+        }
+
+        let process = try ProcessLauncher.launch(
+            command: """
+                if [[ "$ALOFT_ZSHRC_SENTINEL" == loaded-from-zshrc \
+                    && ! -o interactive && ! -o monitor ]]; then
+                    print -r -- ALOFT_IMPORTED_SHELL_ENVIRONMENT
+                fi
+                """,
+            cwd: "/tmp",
+            shell: "/bin/zsh"
+        )
+        defer {
+            try? ProcessLauncher.signalProcessGroup(
+                process.processGroupID,
+                signal: SIGKILL
+            )
+            close(process.masterFileDescriptor)
+            _ = try? ProcessLauncher.wait(pid: process.pid, noHang: false)
+        }
+
+        let output = try readUntilEOFOrTimeout(
+            fd: process.masterFileDescriptor,
+            timeout: 2
+        )
+
+        XCTAssertTrue(
+            output.contains("ALOFT_IMPORTED_SHELL_ENVIRONMENT"),
+            "managed command did not import .zshrc environment without job control: \(output)"
+        )
+    }
+
+    func testEveryCatalogShellExecutesTheManagedCommand() throws {
+        for option in ShellCatalog.available {
+            let marker = "ALOFT_SHELL_OK_"
+                + option.path.replacingOccurrences(
+                    of: "/",
+                    with: "_"
+                )
+            let process = try ProcessLauncher.launch(
+                command: "printf '%s\\n' '\(marker)'",
+                cwd: "/tmp",
+                shell: option.path
+            )
+            defer {
+                try? ProcessLauncher.signalProcessGroup(
+                    process.processGroupID,
+                    signal: SIGKILL
+                )
+                close(process.masterFileDescriptor)
+                _ = try? ProcessLauncher.wait(
+                    pid: process.pid,
+                    noHang: false
+                )
+            }
+
+            let output = try readUntilEOFOrTimeout(
+                fd: process.masterFileDescriptor,
+                timeout: 2
+            )
+
+            XCTAssertTrue(
+                output.contains(marker),
+                "\(option.path) did not execute the managed command: \(output)"
+            )
+        }
+    }
+
     func testLaunchUsesConfiguredCWDAndTTY() throws {
         let directory = FileManager.default.temporaryDirectory.path
         let process = try ProcessLauncher.launch(
@@ -142,6 +232,42 @@ final class ProcessLauncherTests: XCTestCase {
         XCTAssertTrue(try waitUntil(timeout: 2) {
             try ProcessLauncher.processGroupExists(process.processGroupID) == false
         })
+    }
+
+    func testIgnoredSIGTERMSurvivesManagedCommandExecution() throws {
+        let process = try ProcessLauncher.launch(
+            command: "trap '' TERM; echo ALOFT_TERM_IGNORED; exec sleep 30",
+            cwd: "/tmp"
+        )
+        defer {
+            try? ProcessLauncher.signalProcessGroup(
+                process.processGroupID,
+                signal: SIGKILL
+            )
+            close(process.masterFileDescriptor)
+            _ = try? ProcessLauncher.wait(pid: process.pid, noHang: false)
+        }
+
+        _ = try readUntilContains(
+            fd: process.masterFileDescriptor,
+            marker: "ALOFT_TERM_IGNORED",
+            timeout: 2
+        )
+        XCTAssertTrue(try waitUntil(timeout: 2) {
+            try executableName(pid: process.pid) == "sleep"
+        })
+
+        try ProcessLauncher.signalProcessGroup(
+            process.processGroupID,
+            signal: SIGTERM
+        )
+        usleep(500_000)
+
+        XCTAssertEqual(
+            try ProcessLauncher.wait(pid: process.pid, noHang: true),
+            .running,
+            "ignored SIGTERM did not survive shell execution"
+        )
     }
 
     func testMissingCWDReportsChangeDirectoryPhase() {

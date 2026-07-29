@@ -118,14 +118,19 @@ struct MenuBarContent: View {
     }
 
     var body: some View {
-        Text("Running: \(projection.runningCount)")
+        Text(
+            L10n.format(
+                "Running: %lld",
+                projection.runningCount
+            )
+        )
 
         Divider()
 
         ForEach(projection.groupMenus) { group in
             Menu(group.title) {
                 if group.liveEntries.isEmpty {
-                    Text("No Running Commands")
+                    Text(L10n.string("No Running Commands"))
                 } else {
                     ForEach(group.liveEntries) { entry in
                         Button(entry.title) {
@@ -136,14 +141,14 @@ struct MenuBarContent: View {
 
                 Divider()
 
-                Button("Start All") {
+                Button(L10n.string("Start All")) {
                     _ = model.startGroup(id: group.id)
                 }
-                Button("Stop All") {
+                Button(L10n.string("Stop All")) {
                     _ = model.stopGroup(id: group.id)
                 }
                 .disabled(group.liveEntries.isEmpty)
-                Button("Restart All") {
+                Button(L10n.string("Restart All")) {
                     _ = model.restartGroup(id: group.id)
                 }
                 .disabled(group.liveEntries.isEmpty)
@@ -153,7 +158,7 @@ struct MenuBarContent: View {
         if let latestMatch = projection.latestMatch {
             Divider()
 
-            Text("Latest Match")
+            Text(L10n.string("Latest Match"))
             Button(latestMatch.title) {
                 openManagement(entryID: latestMatch.entryID)
             }
@@ -161,10 +166,10 @@ struct MenuBarContent: View {
 
         Divider()
 
-        Button("Open Aloft") {
+        Button(L10n.string("Open Aloft")) {
             openManagement(entryID: nil)
         }
-        Button("Quit Aloft") {
+        Button(L10n.string("Quit Aloft")) {
             NSApplication.shared.terminate(nil)
         }
     }

@@ -70,11 +70,21 @@ enum GhosttyServiceError: Error, Equatable, LocalizedError, Sendable {
     var errorDescription: String? {
         switch self {
         case .notInstalled:
-            return "Ghostty is not installed in /Applications."
+            return L10n.string(
+                "Ghostty is not installed in /Applications."
+            )
         case .unsupported(let version):
-            return "Ghostty \(version.major).\(version.minor).\(version.patch) does not support companion shells."
+            return L10n.format(
+                "Ghostty %@.%@.%@ does not support companion shells.",
+                String(version.major),
+                String(version.minor),
+                String(version.patch)
+            )
         case .invalidWorkingDirectory(let path):
-            return "The working directory does not exist or is not a directory: \(path)"
+            return L10n.format(
+                "The working directory does not exist or is not a directory: %@",
+                path
+            )
         case .appleScript(let message):
             return message
         }
@@ -186,7 +196,9 @@ struct GhosttyService {
         guard let script = NSAppleScript(source: source) else {
             return [
                 NSAppleScript.errorMessage:
-                    "The Ghostty AppleScript could not be created."
+                    L10n.string(
+                        "The Ghostty AppleScript could not be created."
+                    )
             ]
         }
         var errorDictionary: NSDictionary?
@@ -209,8 +221,11 @@ struct GhosttyService {
         if let number = dictionary[
             NSAppleScript.errorNumber
         ] as? NSNumber {
-            return "AppleScript error \(number.intValue)"
+            return L10n.format(
+                "AppleScript error %@",
+                String(number.intValue)
+            )
         }
-        return "AppleScript execution failed."
+        return L10n.string("AppleScript execution failed.")
     }
 }

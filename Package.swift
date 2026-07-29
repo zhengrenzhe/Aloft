@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "Aloft",
+    defaultLocalization: "en",
     platforms: [.macOS(.v14)],
     products: [.executable(name: "Aloft", targets: ["AloftApp"])],
     targets: [
@@ -12,7 +13,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "AloftApp",
-            dependencies: ["AloftProcess"]
+            dependencies: ["AloftProcess"],
+            resources: [
+                .process("Resources"),
+            ]
         ),
         .testTarget(
             name: "AloftAppTests",

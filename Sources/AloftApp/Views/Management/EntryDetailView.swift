@@ -13,10 +13,12 @@ struct EntryDetailView: View {
                     .id(entry.id)
             } else {
                 ContentUnavailableView(
-                    "No Command Selected",
+                    L10n.string("No Command Selected"),
                     systemImage: "terminal",
                     description: Text(
-                        "Select a command to inspect its process and output."
+                        L10n.string(
+                            "Select a command to inspect its process and output."
+                        )
                     )
                 )
             }
@@ -33,7 +35,7 @@ struct EntryDetailView: View {
                 )
             } else {
                 ContentUnavailableView(
-                    "Command No Longer Exists",
+                    L10n.string("Command No Longer Exists"),
                     systemImage: "exclamationmark.triangle"
                 )
                 .frame(minWidth: 360, minHeight: 220)
@@ -69,7 +71,13 @@ struct EntryDetailView: View {
             if isLive, let process,
                let pid = process.pid,
                let processGroupID = process.processGroupID {
-                Text("PID \(pid) · PGID \(processGroupID)")
+                Text(
+                    L10n.format(
+                        "PID %@ · PGID %@",
+                        String(pid),
+                        String(processGroupID)
+                    )
+                )
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -77,7 +85,12 @@ struct EntryDetailView: View {
 
             if let match = entryRuntime?.output.latestMatch {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Latest match: \(match.keyword)")
+                    Text(
+                        L10n.format(
+                            "Latest match: %@",
+                            match.keyword
+                        )
+                    )
                         .font(.callout)
                         .fontWeight(.medium)
                     Text(match.line)
@@ -102,13 +115,16 @@ struct EntryDetailView: View {
             .frame(minHeight: 220)
 
             HStack {
-                Toggle("Auto-scroll", isOn: $autoScroll)
+                Toggle(
+                    L10n.string("Auto-scroll"),
+                    isOn: $autoScroll
+                )
                     .toggleStyle(.checkbox)
                 Spacer()
-                Button("Clear Output") {
+                Button(L10n.string("Clear Output")) {
                     model.runtime.clearOutput(entryID: entry.id)
                 }
-                Button("Open in Ghostty") {
+                Button(L10n.string("Open in Ghostty")) {
                     model.openSelectedEntryInGhostty()
                 }
             }
@@ -117,7 +133,10 @@ struct EntryDetailView: View {
         .navigationTitle(entry.name)
         .toolbar {
             ToolbarItemGroup {
-                Button("Edit", systemImage: "pencil") {
+                Button(
+                    L10n.string("Edit"),
+                    systemImage: "pencil"
+                ) {
                     guard let groupID = model.selectedGroupID else {
                         return
                     }
@@ -127,20 +146,29 @@ struct EntryDetailView: View {
                     )
                 }
                 if isLive {
-                    Button("Stop", systemImage: "stop.fill") {
+                    Button(
+                        L10n.string("Stop"),
+                        systemImage: "stop.fill"
+                    ) {
                         model.stopEntry(id: entry.id)
                     }
                     .disabled(
                         model.runtime.protectedEntryIDs.contains(entry.id)
                     )
-                    Button("Restart", systemImage: "arrow.clockwise") {
+                    Button(
+                        L10n.string("Restart"),
+                        systemImage: "arrow.clockwise"
+                    ) {
                         model.restartEntry(id: entry.id)
                     }
                     .disabled(
                         model.runtime.protectedEntryIDs.contains(entry.id)
                     )
                 } else {
-                    Button("Start", systemImage: "play.fill") {
+                    Button(
+                        L10n.string("Start"),
+                        systemImage: "play.fill"
+                    ) {
                         model.startEntry(id: entry.id)
                     }
                     .disabled(
@@ -168,7 +196,7 @@ private struct ProcessStatusLabel: View {
 
     var body: some View {
         Label(
-            isLive ? "Running" : "Stopped",
+            L10n.string(isLive ? "Running" : "Stopped"),
             systemImage: isLive
                 ? "circle.fill"
                 : "circle"

@@ -4,9 +4,11 @@ set -euo pipefail
 readonly APP_NAME="Aloft"
 readonly BUNDLE_ID="com.bytedance.aloft"
 readonly MIN_SYSTEM_VERSION="14.0"
+readonly INSTALLED_APP_BUNDLE="/Applications/$APP_NAME.app"
+readonly INSTALLED_APP_BINARY="$INSTALLED_APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
 usage() {
-  echo "usage: $0 [run|--debug|debug|--logs|logs|--telemetry|telemetry|--verify|verify]" >&2
+  echo "usage: $0 [run|--debug|--logs|--telemetry|--verify|--release|--stage-release|--install-release]" >&2
 }
 
 if [[ $# -gt 1 ]]; then
@@ -16,31 +18,51 @@ fi
 
 case "${1:-run}" in
   run)
-    readonly MODE="run"
+    MODE="run"
+    BUILD_CONFIGURATION="debug"
     ;;
   --debug|debug)
-    readonly MODE="debug"
+    MODE="debug"
+    BUILD_CONFIGURATION="debug"
     ;;
   --logs|logs)
-    readonly MODE="logs"
+    MODE="logs"
+    BUILD_CONFIGURATION="debug"
     ;;
   --telemetry|telemetry)
-    readonly MODE="telemetry"
+    MODE="telemetry"
+    BUILD_CONFIGURATION="debug"
     ;;
   --verify|verify)
-    readonly MODE="verify"
+    MODE="verify"
+    BUILD_CONFIGURATION="debug"
+    ;;
+  --release|release)
+    MODE="release"
+    BUILD_CONFIGURATION="release"
+    ;;
+  --stage-release|stage-release)
+    MODE="stage-release"
+    BUILD_CONFIGURATION="release"
+    ;;
+  --install-release|install-release)
+    MODE="install-release"
+    BUILD_CONFIGURATION="release"
     ;;
   *)
     usage
     exit 2
     ;;
 esac
+readonly MODE
+readonly BUILD_CONFIGURATION
 
 readonly PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly DIST_DIR="$PROJECT_ROOT/dist"
 readonly APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 readonly APP_CONTENTS="$APP_BUNDLE/Contents"
 readonly APP_MACOS="$APP_CONTENTS/MacOS"
+readonly APP_RESOURCES="$APP_CONTENTS/Resources"
 readonly APP_BINARY="$APP_MACOS/$APP_NAME"
 readonly INFO_PLIST="$APP_CONTENTS/Info.plist"
 
@@ -126,19 +148,26 @@ request_existing_app_to_quit() {
 stage_app_bundle() {
   local build_bin_path
   local build_binary
+  local build_resource_bundle
   local staging_root
   local staged_bundle
   local staged_contents
   local staged_macos
+  local staged_resources
   local staged_binary
   local staged_plist
 
-  swift build
-  build_bin_path="$(swift build --show-bin-path)"
+  swift build -c "$BUILD_CONFIGURATION"
+  build_bin_path="$(swift build -c "$BUILD_CONFIGURATION" --show-bin-path)"
   build_binary="$build_bin_path/$APP_NAME"
+  build_resource_bundle="$build_bin_path/Aloft_AloftApp.bundle"
 
   if [[ ! -x "$build_binary" ]]; then
     echo "error: SwiftPM did not produce executable $build_binary" >&2
+    exit 1
+  fi
+  if [[ ! -d "$build_resource_bundle" ]]; then
+    echo "error: SwiftPM did not produce resource bundle $build_resource_bundle" >&2
     exit 1
   fi
 
@@ -146,6 +175,7 @@ stage_app_bundle() {
   staged_bundle="$staging_root/$APP_NAME.app"
   staged_contents="$staged_bundle/Contents"
   staged_macos="$staged_contents/MacOS"
+  staged_resources="$staged_contents/Resources"
   staged_binary="$staged_macos/$APP_NAME"
   staged_plist="$staged_contents/Info.plist"
 
@@ -154,9 +184,12 @@ stage_app_bundle() {
   }
   trap cleanup_staging EXIT
 
-  /bin/mkdir -p "$staged_macos"
+  /bin/mkdir -p "$staged_macos" "$staged_resources"
   /bin/cp "$build_binary" "$staged_binary"
   /bin/chmod +x "$staged_binary"
+  /usr/bin/ditto \
+    "$build_resource_bundle" \
+    "$staged_resources/Aloft_AloftApp.bundle"
 
   /bin/cat >"$staged_plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -167,6 +200,22 @@ stage_app_bundle() {
   <string>$APP_NAME</string>
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>ar</string>
+    <string>de</string>
+    <string>en</string>
+    <string>es</string>
+    <string>fr</string>
+    <string>ja</string>
+    <string>ko</string>
+    <string>pt-BR</string>
+    <string>ru</string>
+    <string>zh-Hans</string>
+    <string>zh-Hant</string>
+  </array>
   <key>CFBundleName</key>
   <string>$APP_NAME</string>
   <key>CFBundlePackageType</key>
@@ -184,6 +233,8 @@ stage_app_bundle() {
 PLIST
 
   /usr/bin/plutil -lint "$staged_plist" >/dev/null
+  /usr/bin/codesign --force --sign - "$staged_bundle"
+  /usr/bin/codesign --verify --deep --strict --verbose=2 "$staged_bundle"
 
   validate_dist_directory
   if [[ "$APP_BUNDLE" != "$PROJECT_ROOT/dist/Aloft.app" ]]; then
@@ -197,20 +248,22 @@ PLIST
 }
 
 open_app() {
-  /usr/bin/open -n "$APP_BUNDLE"
+  local bundle="${1:-$APP_BUNDLE}"
+  /usr/bin/open -n "$bundle"
 }
 
 verify_app_started() {
+  local expected_binary="${1:-$APP_BINARY}"
   local attempt
   for attempt in {1..50}; do
-    if process_is_running; then
-      echo "$APP_NAME is running from $APP_BUNDLE"
+    if process_is_running_from "$expected_binary"; then
+      echo "$APP_NAME is running from $expected_binary"
       return
     fi
     /bin/sleep 0.1
   done
-  if process_is_running; then
-    echo "$APP_NAME is running from $APP_BUNDLE"
+  if process_is_running_from "$expected_binary"; then
+    echo "$APP_NAME is running from $expected_binary"
     return
   fi
 
@@ -219,8 +272,90 @@ verify_app_started() {
   exit 1
 }
 
+process_is_running_from() {
+  local expected_binary="$1"
+  local pid
+  local process_binary
+
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] || continue
+    process_binary="$(/bin/ps -p "$pid" -o comm=)"
+    if [[ "$process_binary" == "$expected_binary" ]]; then
+      return 0
+    fi
+  done < <(/usr/bin/pgrep -x "$APP_NAME" || true)
+
+  return 1
+}
+
+install_app_bundle() {
+  local install_parent="/Applications"
+  local physical_install_parent
+  local staging_root
+  local staged_install_bundle
+  local backup_bundle
+  local had_existing=0
+  local new_bundle_installed=0
+
+  physical_install_parent="$(cd "$install_parent" && pwd -P)"
+  if [[ "$physical_install_parent" != "/Applications" ]]; then
+    echo "error: application directory resolves unexpectedly: $physical_install_parent" >&2
+    exit 1
+  fi
+  if [[ -L "$INSTALLED_APP_BUNDLE" ]]; then
+    echo "error: refusing to replace symlinked app bundle $INSTALLED_APP_BUNDLE" >&2
+    exit 1
+  fi
+  if [[ -e "$INSTALLED_APP_BUNDLE" && ! -d "$INSTALLED_APP_BUNDLE" ]]; then
+    echo "error: installed app path is not a directory: $INSTALLED_APP_BUNDLE" >&2
+    exit 1
+  fi
+
+  staging_root="$(/usr/bin/mktemp -d "$install_parent/.aloft-install.XXXXXX")"
+  staged_install_bundle="$staging_root/$APP_NAME.app"
+  backup_bundle="$staging_root/$APP_NAME.previous.app"
+
+  rollback_install() {
+    local status=$?
+    trap - EXIT
+    set +e
+    if [[ "$new_bundle_installed" -eq 1 && -d "$INSTALLED_APP_BUNDLE" ]]; then
+      /bin/rm -rf "$INSTALLED_APP_BUNDLE"
+    fi
+    if [[ "$had_existing" -eq 1 && -d "$backup_bundle" ]]; then
+      /bin/mv "$backup_bundle" "$INSTALLED_APP_BUNDLE"
+    fi
+    /bin/rm -rf "$staging_root"
+    exit "$status"
+  }
+  trap rollback_install EXIT
+
+  /usr/bin/ditto "$APP_BUNDLE" "$staged_install_bundle"
+  /usr/bin/plutil -lint "$staged_install_bundle/Contents/Info.plist" >/dev/null
+  /usr/bin/codesign --verify --deep --strict --verbose=2 "$staged_install_bundle"
+
+  if [[ -d "$INSTALLED_APP_BUNDLE" ]]; then
+    had_existing=1
+    /bin/mv "$INSTALLED_APP_BUNDLE" "$backup_bundle"
+  fi
+  /bin/mv "$staged_install_bundle" "$INSTALLED_APP_BUNDLE"
+  new_bundle_installed=1
+
+  /usr/bin/plutil -lint "$INSTALLED_APP_BUNDLE/Contents/Info.plist" >/dev/null
+  /usr/bin/codesign --verify --deep --strict --verbose=2 "$INSTALLED_APP_BUNDLE"
+
+  if [[ "$had_existing" -eq 1 ]]; then
+    /bin/rm -rf "$backup_bundle"
+  fi
+  trap - EXIT
+  /bin/rm -rf "$staging_root"
+  echo "Installed release app at $INSTALLED_APP_BUNDLE"
+}
+
 prepare_dist_directory
-request_existing_app_to_quit
+if [[ "$MODE" != "stage-release" ]]; then
+  request_existing_app_to_quit
+fi
 stage_app_bundle
 
 case "$MODE" in
@@ -247,5 +382,17 @@ case "$MODE" in
   verify)
     open_app
     verify_app_started
+    ;;
+  release)
+    open_app
+    verify_app_started
+    ;;
+  stage-release)
+    echo "Staged release app at $APP_BUNDLE"
+    ;;
+  install-release)
+    install_app_bundle
+    open_app "$INSTALLED_APP_BUNDLE"
+    verify_app_started "$INSTALLED_APP_BINARY"
     ;;
 esac

@@ -148,7 +148,9 @@ final class RuntimeStoreTests: XCTestCase {
         XCTAssertTrue(receivedSecondSession)
         XCTAssertEqual(
             occurrences(
-                of: "Session started",
+                of: L10n.string(
+                    "──── Session started %@ ────"
+                ).components(separatedBy: "%@")[0],
                 in: runtime.runtime(for: entryID).output.displayText
             ),
             2

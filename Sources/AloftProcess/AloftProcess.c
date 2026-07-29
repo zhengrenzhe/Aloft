@@ -62,7 +62,11 @@ static int set_close_on_exec(int fd) {
     return result;
 }
 
-aloft_launch_result aloft_launch(const char *command, const char *cwd) {
+aloft_launch_result aloft_launch(
+    const char *command,
+    const char *cwd,
+    const char *shell
+) {
     int master_fd = -1;
     int slave_fd = -1;
     int error_pipe[2] = {-1, -1};
@@ -127,7 +131,18 @@ aloft_launch_result aloft_launch(const char *command, const char *cwd) {
         if (chdir(cwd) == -1) {
             child_fail(error_pipe[1], ALOFT_LAUNCH_CHDIR);
         }
-        execl("/bin/zsh", "zsh", "-l", "-c", command, (char *)NULL);
+        execl(
+            shell,
+            shell,
+            "-l",
+            "-i",
+            "+m",
+            "-c",
+            "exec \"$0\" +m -c \"$1\"",
+            shell,
+            command,
+            (char *)NULL
+        );
         child_fail(error_pipe[1], ALOFT_LAUNCH_EXEC);
     }
 

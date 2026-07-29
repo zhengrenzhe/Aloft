@@ -32,10 +32,20 @@ struct ProcessLaunchError: Error, Sendable, Equatable {
 }
 
 enum ProcessLauncher {
-    static func launch(command: String, cwd: String) throws -> LaunchedProcess {
+    static func launch(
+        command: String,
+        cwd: String,
+        shell: String = ShellCatalog.systemDefaultShell
+    ) throws -> LaunchedProcess {
         let result = command.withCString { commandPointer in
             cwd.withCString { cwdPointer in
-                aloft_launch(commandPointer, cwdPointer)
+                shell.withCString { shellPointer in
+                    aloft_launch(
+                        commandPointer,
+                        cwdPointer,
+                        shellPointer
+                    )
+                }
             }
         }
 

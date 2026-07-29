@@ -126,7 +126,7 @@ final class OutputPipelineTests: XCTestCase {
 
         XCTAssertEqual(
             pipeline.consume(Data(), at: .distantPast).snapshot.committedLines,
-            ["──── Session started 1970-01-01 00:00:00 ────"]
+            [epochSessionSeparator()]
         )
     }
 
@@ -141,7 +141,7 @@ final class OutputPipelineTests: XCTestCase {
             update.snapshot.committedLines,
             [
                 "old",
-                "──── Session started 1970-01-01 00:00:00 ────",
+                epochSessionSeparator(),
                 "new",
             ]
         )
@@ -159,7 +159,7 @@ final class OutputPipelineTests: XCTestCase {
             update.snapshot.committedLines,
             [
                 "old",
-                "──── Session started 1970-01-01 00:00:00 ────",
+                epochSessionSeparator(),
                 "new",
             ]
         )
@@ -176,7 +176,7 @@ final class OutputPipelineTests: XCTestCase {
             update.snapshot.committedLines,
             [
                 "�",
-                "──── Session started 1970-01-01 00:00:00 ────",
+                epochSessionSeparator(),
                 "�",
             ]
         )
@@ -205,7 +205,7 @@ final class OutputPipelineTests: XCTestCase {
             update.snapshot.committedLines,
             [
                 "before",
-                "──── Session started 1970-01-01 00:00:00 ────",
+                epochSessionSeparator(),
                 "plain",
             ]
         )
@@ -508,4 +508,11 @@ final class OutputPipelineTests: XCTestCase {
             }
         }
     }
+}
+
+private func epochSessionSeparator() -> String {
+    L10n.format(
+        "──── Session started %@ ────",
+        "1970-01-01 00:00:00"
+    )
 }

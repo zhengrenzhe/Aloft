@@ -5,6 +5,7 @@ enum WorkspaceStoreError: Error, Equatable, LocalizedError {
     case emptyName
     case emptyCommand
     case emptyKeyword
+    case unsupportedShell(String)
     case cwdIsNotDirectory(String)
     case groupNotFound(UUID)
     case entryNotFound(UUID)
@@ -15,23 +16,45 @@ enum WorkspaceStoreError: Error, Equatable, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .emptyName:
-            return "Name cannot be empty."
+            return L10n.string("Name cannot be empty.")
         case .emptyCommand:
-            return "Command cannot be empty."
+            return L10n.string("Command cannot be empty.")
         case .emptyKeyword:
-            return "Keywords cannot be empty."
+            return L10n.string("Keywords cannot be empty.")
+        case .unsupportedShell(let path):
+            return L10n.format(
+                "The selected shell is unavailable or unsupported: %@",
+                path
+            )
         case .cwdIsNotDirectory(let path):
-            return "The working directory does not exist or is not a directory: \(path)"
+            return L10n.format(
+                "The working directory does not exist or is not a directory: %@",
+                path
+            )
         case .groupNotFound(let id):
-            return "Group not found: \(id.uuidString)"
+            return L10n.format(
+                "Group not found: %@",
+                id.uuidString
+            )
         case .entryNotFound(let id):
-            return "Entry not found: \(id.uuidString)"
+            return L10n.format(
+                "Entry not found: %@",
+                id.uuidString
+            )
         case .invalidMove:
-            return "The requested move is outside the collection."
+            return L10n.string(
+                "The requested move is outside the collection."
+            )
         case .liveEntryCannotBeDeleted(let id):
-            return "Stop the live entry before deleting it: \(id.uuidString)"
+            return L10n.format(
+                "Stop the live entry before deleting it: %@",
+                id.uuidString
+            )
         case .liveGroupCannotBeDeleted(let id):
-            return "Stop every live entry before deleting group: \(id.uuidString)"
+            return L10n.format(
+                "Stop every live entry before deleting group: %@",
+                id.uuidString
+            )
         }
     }
 }
@@ -116,12 +139,14 @@ final class WorkspaceStore {
         name: String,
         cwd: String,
         command: String,
+        shell: String = ShellCatalog.systemDefaultShell,
         keywords: [String]
     ) throws -> UUID {
         let values = try validateEntry(
             name: name,
             cwd: cwd,
             command: command,
+            shell: shell,
             keywords: keywords
         )
         let id = UUID()
@@ -137,6 +162,7 @@ final class WorkspaceStore {
                     name: values.name,
                     cwd: values.cwd,
                     command: values.command,
+                    shell: values.shell,
                     keywords: values.keywords,
                     order: configuration.groups[groupIndex].entries.count
                 )
@@ -154,12 +180,14 @@ final class WorkspaceStore {
         name: String,
         cwd: String,
         command: String,
+        shell: String = ShellCatalog.systemDefaultShell,
         keywords: [String]
     ) throws {
         let values = try validateEntry(
             name: name,
             cwd: cwd,
             command: command,
+            shell: shell,
             keywords: keywords
         )
         try persistMutation { configuration in
@@ -175,6 +203,7 @@ final class WorkspaceStore {
             configuration.groups[groupIndex].entries[entryIndex].name = values.name
             configuration.groups[groupIndex].entries[entryIndex].cwd = values.cwd
             configuration.groups[groupIndex].entries[entryIndex].command = values.command
+            configuration.groups[groupIndex].entries[entryIndex].shell = values.shell
             configuration.groups[groupIndex].entries[entryIndex].keywords = values.keywords
         }
     }
@@ -250,17 +279,29 @@ final class WorkspaceStore {
         name: String,
         cwd: String,
         command: String,
+        shell: String,
         keywords: [String]
-    ) throws -> (name: String, cwd: String, command: String, keywords: [String]) {
+    ) throws -> (
+        name: String,
+        cwd: String,
+        command: String,
+        shell: String,
+        keywords: [String]
+    ) {
         let normalizedName = try validateName(name)
-        let normalizedCWD = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedCWD = WorkingDirectoryPath.normalize(cwd)
+        let trimmedCommand = command.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
         let normalizedKeywords = keywords.map {
             $0.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
-        guard !normalizedCommand.isEmpty else {
+        guard !trimmedCommand.isEmpty else {
             throw WorkspaceStoreError.emptyCommand
+        }
+        guard ShellCatalog.isAvailableAndSupported(shell) else {
+            throw WorkspaceStoreError.unsupportedShell(shell)
         }
         guard normalizedKeywords.allSatisfy({ !$0.isEmpty }) else {
             throw WorkspaceStoreError.emptyKeyword
@@ -277,7 +318,8 @@ final class WorkspaceStore {
         return (
             normalizedName,
             normalizedCWD,
-            normalizedCommand,
+            command,
+            shell,
             normalizedKeywords
         )
     }
@@ -311,6 +353,16 @@ private func canonicalized(
                 return $0.order < $1.order
             }
             return $0.id.uuidString < $1.id.uuidString
+        }
+        for entryIndex in result.groups[groupIndex].entries.indices {
+            result.groups[groupIndex].entries[entryIndex].cwd =
+                WorkingDirectoryPath.normalize(
+                    result.groups[groupIndex].entries[entryIndex].cwd
+                )
+            result.groups[groupIndex].entries[entryIndex].shell =
+                ShellCatalog.normalizedSelection(
+                    result.groups[groupIndex].entries[entryIndex].shell
+                )
         }
         normalizeEntryOrders(
             &result.groups[groupIndex].entries

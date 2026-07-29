@@ -26,7 +26,11 @@ typedef struct {
     int error_code;
 } aloft_launch_result;
 
-aloft_launch_result aloft_launch(const char *command, const char *cwd);
+aloft_launch_result aloft_launch(
+    const char *command,
+    const char *cwd,
+    const char *shell
+);
 int aloft_process_group_exists(pid_t pgid);
 int aloft_signal_process_group(pid_t pgid, int signal_number);
 pid_t aloft_waitpid(pid_t pid, int *status, int options);

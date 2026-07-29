@@ -17,11 +17,15 @@ struct GroupEditorView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(group == nil ? "New Group" : "Rename Group")
+            Text(
+                L10n.string(
+                    group == nil ? "New Group" : "Rename Group"
+                )
+            )
                 .font(.title2)
                 .fontWeight(.semibold)
 
-            TextField("Name", text: $name)
+            TextField(L10n.string("Name"), text: $name)
 
             if let validationError {
                 Text(validationError)
@@ -31,10 +35,10 @@ struct GroupEditorView: View {
 
             HStack {
                 Spacer()
-                Button("Cancel", role: .cancel) {
+                Button(L10n.string("Cancel"), role: .cancel) {
                     dismiss()
                 }
-                Button("Save") {
+                Button(L10n.string("Save")) {
                     save()
                 }
                 .keyboardShortcut(.defaultAction)

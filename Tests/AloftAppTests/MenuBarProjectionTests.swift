@@ -404,7 +404,9 @@ final class ApplicationTerminationStateTests: XCTestCase {
         XCTAssertEqual(
             completion?.alert,
             TerminationAlertPresentation(
-                messageText: "Aloft Could Not Stop All Commands",
+                messageText: L10n.string(
+                    "Aloft Could Not Stop All Commands"
+                ),
                 informativeText: """
                 Development Server — PGID 901
                 00000000-0000-0000-0000-000000000012 — PGID 902

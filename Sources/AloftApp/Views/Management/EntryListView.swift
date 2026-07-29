@@ -17,28 +17,28 @@ struct EntryListView: View {
                         )
                         .tag(entry.id)
                         .contextMenu {
-                            Button("Edit") {
+                            Button(L10n.string("Edit")) {
                                 editor = .edit(
                                     groupID: group.id,
                                     entry: entry
                                 )
                             }
                             Divider()
-                            Button("Start") {
+                            Button(L10n.string("Start")) {
                                 model.startEntry(id: entry.id)
                             }
                             .disabled(
                                 entryIsLive(entry)
                                     || entryIsProtected(entry)
                             )
-                            Button("Stop") {
+                            Button(L10n.string("Stop")) {
                                 model.stopEntry(id: entry.id)
                             }
                             .disabled(
                                 !entryIsLive(entry)
                                     || entryIsProtected(entry)
                             )
-                            Button("Restart") {
+                            Button(L10n.string("Restart")) {
                                 model.restartEntry(id: entry.id)
                             }
                             .disabled(
@@ -46,7 +46,10 @@ struct EntryListView: View {
                                     || entryIsProtected(entry)
                             )
                             Divider()
-                            Button("Delete", role: .destructive) {
+                            Button(
+                                L10n.string("Delete"),
+                                role: .destructive
+                            ) {
                                 deleteEntry(entry, in: group.id)
                             }
                             .disabled(
@@ -69,15 +72,20 @@ struct EntryListView: View {
                 }
             } else {
                 ContentUnavailableView(
-                    "No Group Selected",
+                    L10n.string("No Group Selected"),
                     systemImage: "folder",
                     description: Text(
-                        "Create or select a group to add commands."
+                        L10n.string(
+                            "Create or select a group to add commands."
+                        )
                     )
                 )
             }
         }
-        .navigationTitle(model.selectedGroup?.name ?? "Commands")
+        .navigationTitle(
+            model.selectedGroup?.name
+                ?? L10n.string("Commands")
+        )
         .toolbar {
             ToolbarItem {
                 Button {
@@ -88,7 +96,10 @@ struct EntryListView: View {
                         )
                     }
                 } label: {
-                    Label("Add Command", systemImage: "plus")
+                    Label(
+                        L10n.string("Add Command"),
+                        systemImage: "plus"
+                    )
                 }
                 .disabled(model.selectedGroupID == nil)
             }
@@ -153,7 +164,9 @@ private struct EntryRow: View {
             Circle()
                 .fill(isLive ? .green : .secondary)
                 .frame(width: 7, height: 7)
-                .accessibilityLabel(isLive ? "Running" : "Stopped")
+                .accessibilityLabel(
+                    L10n.string(isLive ? "Running" : "Stopped")
+                )
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.name)
                     .lineLimit(1)

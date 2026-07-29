@@ -353,7 +353,12 @@ final class GhosttyServiceTests: XCTestCase {
         XCTAssertThrowsError(try service.openShell(cwd: cwd.path)) { error in
             XCTAssertEqual(
                 error as? GhosttyServiceError,
-                .appleScript(message: "AppleScript error -1743")
+                .appleScript(
+                    message: L10n.format(
+                        "AppleScript error %@",
+                        "-1743"
+                    )
+                )
             )
         }
     }

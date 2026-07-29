@@ -262,7 +262,10 @@ final class RuntimeStoreConcurrencyTests: XCTestCase {
         )
         XCTAssertEqual(
             runtime.runtime(for: entry.id).lastError,
-            "Did not stop process group 261."
+            L10n.format(
+                "Did not stop process group %@.",
+                "261"
+            )
         )
 
         await oldProbeGate.open()
@@ -272,7 +275,10 @@ final class RuntimeStoreConcurrencyTests: XCTestCase {
         XCTAssertEqual(current.process, timedOut)
         XCTAssertEqual(
             current.lastError,
-            "Did not stop process group 261."
+            L10n.format(
+                "Did not stop process group %@.",
+                "261"
+            )
         )
     }
 
@@ -311,7 +317,7 @@ final class RuntimeStoreConcurrencyTests: XCTestCase {
         )
         XCTAssertEqual(
             runtime.runtime(for: entry.id).lastError,
-            "The entry is already running."
+            L10n.string("The entry is already running.")
         )
 
         await oldProbeGate.open()
@@ -321,7 +327,7 @@ final class RuntimeStoreConcurrencyTests: XCTestCase {
         XCTAssertEqual(current.process, running)
         XCTAssertEqual(
             current.lastError,
-            "The entry is already running."
+            L10n.string("The entry is already running.")
         )
     }
 

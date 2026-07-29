@@ -21,7 +21,8 @@ final class WorkspaceStoreTests: XCTestCase {
             to: frontendID,
             name: " Web ",
             cwd: " /tmp ",
-            command: " npm run dev ",
+            command: "npm run dev",
+            shell: "/bin/sh",
             keywords: [" ready ", " error "]
         )
         XCTAssertEqual(try repository.load(), store.configuration)
@@ -39,7 +40,8 @@ final class WorkspaceStoreTests: XCTestCase {
             in: frontendID,
             name: " Web dev ",
             cwd: " /tmp ",
-            command: " npm run dev ",
+            command: "npm run dev",
+            shell: "/bin/zsh",
             keywords: [" ready ", " error "]
         )
         try store.moveEntries(
@@ -76,6 +78,7 @@ final class WorkspaceStoreTests: XCTestCase {
                 name: "Web dev",
                 cwd: "/tmp",
                 command: "npm run dev",
+                shell: "/bin/zsh",
                 keywords: ["ready", "error"],
                 order: 1
             )
@@ -101,6 +104,58 @@ final class WorkspaceStoreTests: XCTestCase {
         )
         XCTAssertEqual(try repository.load(), store.configuration)
         XCTAssertNil(store.persistenceError)
+    }
+
+    func testEntryExpandsTildeInWorkingDirectory() throws {
+        let location = temporaryConfigurationLocation()
+        defer { try? FileManager.default.removeItem(at: location.root) }
+
+        let repository = ConfigurationRepository(fileURL: location.file)
+        let store = try WorkspaceStore(repository: repository)
+        let groupID = try store.addGroup(name: "Frontend")
+        let entryID = try store.addEntry(
+            to: groupID,
+            name: "Web",
+            cwd: "~",
+            command: "npm run dev",
+            keywords: []
+        )
+
+        let entry = try XCTUnwrap(
+            store.configuration.groups[0].entries.first {
+                $0.id == entryID
+            }
+        )
+        XCTAssertEqual(
+            entry.cwd,
+            FileManager.default.homeDirectoryForCurrentUser.path
+        )
+        XCTAssertEqual(try repository.load(), store.configuration)
+    }
+
+    func testEntryPreservesCommandWhitespace() throws {
+        let location = temporaryConfigurationLocation()
+        defer { try? FileManager.default.removeItem(at: location.root) }
+
+        let repository = ConfigurationRepository(fileURL: location.file)
+        let store = try WorkspaceStore(repository: repository)
+        let groupID = try store.addGroup(name: "Frontend")
+        let command = "  printf 'left  middle  right'  \n"
+        let entryID = try store.addEntry(
+            to: groupID,
+            name: "Whitespace",
+            cwd: "/tmp",
+            command: command,
+            keywords: []
+        )
+
+        let entry = try XCTUnwrap(
+            store.configuration.groups[0].entries.first {
+                $0.id == entryID
+            }
+        )
+        XCTAssertEqual(entry.command, command)
+        XCTAssertEqual(try repository.load(), store.configuration)
     }
 
     func testEntryValidationRejectsInvalidFieldsAndNonDirectoryPaths() throws {
@@ -132,6 +187,16 @@ final class WorkspaceStoreTests: XCTestCase {
                 name: "Web",
                 cwd: "/tmp",
                 command: "\n",
+                keywords: []
+            )
+        )
+        XCTAssertThrowsError(
+            try store.addEntry(
+                to: groupID,
+                name: "Web",
+                cwd: "/tmp",
+                command: "npm run dev",
+                shell: "/bin/tcsh",
                 keywords: []
             )
         )

@@ -19,6 +19,7 @@ struct ManagementView: View {
         } detail: {
             EntryDetailView(model: model)
         }
+        .toolbar(removing: .sidebarToggle)
         .alert(
             "Aloft",
             isPresented: Binding(
@@ -30,7 +31,7 @@ struct ManagementView: View {
                 }
             ),
             actions: {
-                Button("OK") {
+                Button(L10n.string("OK")) {
                     model.presentedError = nil
                 }
             },

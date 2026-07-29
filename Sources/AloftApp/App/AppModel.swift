@@ -153,6 +153,7 @@ final class AppModel {
         name: String,
         cwd: String,
         command: String,
+        shell: String = ShellCatalog.systemDefaultShell,
         keywords: [String]
     ) throws -> UUID {
         let id = try workspace.addEntry(
@@ -160,6 +161,7 @@ final class AppModel {
             name: name,
             cwd: cwd,
             command: command,
+            shell: shell,
             keywords: keywords
         )
         selectedGroupID = groupID
@@ -174,6 +176,7 @@ final class AppModel {
         name: String,
         cwd: String,
         command: String,
+        shell: String = ShellCatalog.systemDefaultShell,
         keywords: [String]
     ) throws {
         try workspace.updateEntry(
@@ -182,6 +185,7 @@ final class AppModel {
             name: name,
             cwd: cwd,
             command: command,
+            shell: shell,
             keywords: keywords
         )
         repairSelection()
@@ -359,7 +363,11 @@ final class AppModel {
         guard let group = group(id: groupID) else {
             return nil
         }
-        let entries = group.entries
+        let excludedEntryIDs = runtime.liveEntryIDs
+            .union(runtime.protectedEntryIDs)
+        let entries = group.entries.filter {
+            !excludedEntryIDs.contains($0.id)
+        }
         let reservation = runtime.reserveOperations(
             entryIDs: entries.map(\.id)
         )

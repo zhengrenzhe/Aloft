@@ -104,11 +104,15 @@ enum RuntimeStoreError: Error, Equatable, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .terminationInProgress:
-            return "Aloft is stopping managed processes for termination."
+            return L10n.string(
+                "Aloft is stopping managed processes for termination."
+            )
         case .operationSuperseded:
-            return "The operation was superseded by a newer process generation."
+            return L10n.string(
+                "The operation was superseded by a newer process generation."
+            )
         case .operationCancelled:
-            return "The operation was cancelled."
+            return L10n.string("The operation was cancelled.")
         }
     }
 }
@@ -1305,16 +1309,24 @@ private func describeProcessError(_ error: Error) -> String {
     }
     if let error = error as? ProcessLaunchError {
         let systemMessage = String(cString: strerror(error.code))
-        return "Launch failed during \(error.phase.rawValue): \(systemMessage)"
+        return L10n.format(
+            "Launch failed during %@: %@",
+            error.phase.rawValue,
+            systemMessage
+        )
     }
     if let error = error as? ProcessSupervisorError {
         switch error {
         case .alreadyRunning:
-            return "The entry is already running."
+            return L10n.string("The entry is already running.")
         case .stopTimedOut:
-            return "The process group did not stop before the timeout."
+            return L10n.string(
+                "The process group did not stop before the timeout."
+            )
         case .unknownEntry:
-            return "The entry has no managed process."
+            return L10n.string(
+                "The entry has no managed process."
+            )
         }
     }
     return error.localizedDescription
@@ -1324,8 +1336,11 @@ private func didNotStopDescription(
     _ snapshot: ProcessSnapshot
 ) -> String {
     let processGroup = snapshot.processGroupID.map(String.init)
-        ?? "unknown"
-    return "Did not stop process group \(processGroup)."
+        ?? L10n.string("unknown")
+    return L10n.format(
+        "Did not stop process group %@.",
+        processGroup
+    )
 }
 
 private func uuidLessThan(_ lhs: UUID, _ rhs: UUID) -> Bool {

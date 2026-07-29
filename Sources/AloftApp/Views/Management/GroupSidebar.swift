@@ -16,21 +16,24 @@ struct GroupSidebar: View {
                 )
                 .tag(group.id)
                 .contextMenu {
-                    Button("Rename") {
+                    Button(L10n.string("Rename")) {
                         editor = .edit(group)
                     }
                     Divider()
-                    Button("Start All") {
+                    Button(L10n.string("Start All")) {
                         model.startGroup(id: group.id)
                     }
-                    Button("Stop All") {
+                    Button(L10n.string("Stop All")) {
                         model.stopGroup(id: group.id)
                     }
-                    Button("Restart All") {
+                    Button(L10n.string("Restart All")) {
                         model.restartGroup(id: group.id)
                     }
                     Divider()
-                    Button("Delete", role: .destructive) {
+                    Button(
+                        L10n.string("Delete"),
+                        role: .destructive
+                    ) {
                         deleteGroup(group)
                     }
                     .disabled(
@@ -50,13 +53,16 @@ struct GroupSidebar: View {
             }
         }
         .listStyle(.sidebar)
-        .navigationTitle("Groups")
+        .navigationTitle(L10n.string("Groups"))
         .toolbar {
-            ToolbarItem {
+            ToolbarItem(placement: .navigation) {
                 Button {
                     editor = .add(UUID())
                 } label: {
-                    Label("Add Group", systemImage: "plus")
+                    Label(
+                        L10n.string("Add Group"),
+                        systemImage: "plus"
+                    )
                 }
             }
         }
@@ -106,7 +112,10 @@ private struct GroupRow: View {
                     .fill(.green)
                     .frame(width: 7, height: 7)
                     .accessibilityLabel(
-                        "\(liveCount) running commands"
+                        L10n.format(
+                            "%lld running commands",
+                            liveCount
+                        )
                     )
             }
         }

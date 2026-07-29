@@ -2,6 +2,10 @@ import AppKit
 import SwiftUI
 
 struct EntryEditorView: View {
+    private enum Field: Hashable {
+        case name
+    }
+
     @Environment(\.dismiss) private var dismiss
 
     let model: AppModel
@@ -11,8 +15,10 @@ struct EntryEditorView: View {
     @State private var name: String
     @State private var cwd: String
     @State private var command: String
+    @State private var shell: String
     @State private var keywords: String
     @State private var validationError: String?
+    @FocusState private var focusedField: Field?
 
     init(
         model: AppModel,
@@ -25,6 +31,11 @@ struct EntryEditorView: View {
         _name = State(initialValue: entry?.name ?? "")
         _cwd = State(initialValue: entry?.cwd ?? "")
         _command = State(initialValue: entry?.command ?? "")
+        _shell = State(
+            initialValue: ShellCatalog.normalizedSelection(
+                entry?.shell ?? ShellCatalog.systemDefaultShell
+            )
+        )
         _keywords = State(
             initialValue: entry?.keywords.joined(separator: "\n") ?? ""
         )
@@ -32,35 +43,66 @@ struct EntryEditorView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(entry == nil ? "New Command" : "Edit Command")
+            Text(
+                L10n.string(
+                    entry == nil ? "New Command" : "Edit Command"
+                )
+            )
                 .font(.title2)
                 .fontWeight(.semibold)
 
             Form {
-                TextField("Name", text: $name)
+                TextField(L10n.string("Name"), text: $name)
+                    .focused($focusedField, equals: .name)
 
                 HStack {
-                    TextField("Working Directory", text: $cwd)
-                    Button("Browse…") {
+                    TextField(
+                        L10n.string("Working Directory"),
+                        text: $cwd
+                    )
+                    Button(L10n.string("Browse…")) {
                         chooseWorkingDirectory()
                     }
                 }
 
-                LabeledContent("Command") {
+                Picker(L10n.string("Shell"), selection: $shell) {
+                    ForEach(ShellCatalog.available) { option in
+                        Text(option.displayName)
+                            .tag(option.path)
+                    }
+                }
+
+                LabeledContent(L10n.string("Command")) {
                     TextEditor(text: $command)
                         .font(.system(.body, design: .monospaced))
+                        .multilineTextAlignment(.leading)
                         .frame(minHeight: 80)
                 }
 
-                LabeledContent("Keywords") {
+                LabeledContent(L10n.string("Keywords")) {
                     TextEditor(text: $keywords)
                         .font(.system(.body, design: .monospaced))
+                        .multilineTextAlignment(.leading)
                         .frame(minHeight: 70)
                 }
             }
             .formStyle(.grouped)
 
-            Text("Enter one case-sensitive keyword per line.")
+            Text(
+                L10n.string(
+                    "Available login shells come from /etc/shells. "
+                        + "Aloft supports POSIX-style sh, bash, dash, "
+                        + "ksh, and zsh."
+                )
+            )
+                .foregroundStyle(.secondary)
+                .font(.caption)
+
+            Text(
+                L10n.string(
+                    "Enter one case-sensitive keyword per line."
+                )
+            )
                 .foregroundStyle(.secondary)
                 .font(.caption)
 
@@ -72,10 +114,10 @@ struct EntryEditorView: View {
 
             HStack {
                 Spacer()
-                Button("Cancel", role: .cancel) {
+                Button(L10n.string("Cancel"), role: .cancel) {
                     dismiss()
                 }
-                Button("Save") {
+                Button(L10n.string("Save")) {
                     save()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -83,6 +125,10 @@ struct EntryEditorView: View {
         }
         .padding(20)
         .frame(minWidth: 560, minHeight: 430)
+        .task {
+            await Task.yield()
+            focusedField = .name
+        }
     }
 
     private func chooseWorkingDirectory() {
@@ -91,10 +137,10 @@ struct EntryEditorView: View {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
-        panel.prompt = "Choose"
+        panel.prompt = L10n.string("Choose")
         if !cwd.isEmpty {
             panel.directoryURL = URL(
-                fileURLWithPath: cwd,
+                fileURLWithPath: WorkingDirectoryPath.normalize(cwd),
                 isDirectory: true
             )
         }
@@ -120,6 +166,7 @@ struct EntryEditorView: View {
                     name: name,
                     cwd: cwd,
                     command: command,
+                    shell: shell,
                     keywords: trimmedKeywords
                 )
             } else {
@@ -128,6 +175,7 @@ struct EntryEditorView: View {
                     name: name,
                     cwd: cwd,
                     command: command,
+                    shell: shell,
                     keywords: trimmedKeywords
                 )
             }
