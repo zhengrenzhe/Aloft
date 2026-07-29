@@ -150,6 +150,7 @@ enum RuntimeStoreError: Error, Equatable, LocalizedError {
     case terminationInProgress
     case operationSuperseded
     case operationCancelled
+    case entryRemovalProtected(UUID)
 
     var errorDescription: String? {
         switch self {
@@ -163,6 +164,11 @@ enum RuntimeStoreError: Error, Equatable, LocalizedError {
             )
         case .operationCancelled:
             return L10n.string("The operation was cancelled.")
+        case .entryRemovalProtected(let entryID):
+            return L10n.format(
+                "Stop the live entry before deleting it: %@",
+                entryID.uuidString
+            )
         }
     }
 }
@@ -729,6 +735,45 @@ final class RuntimeStore {
         entryRuntime.terminalSurface?.clear()
         if latestGlobalMatch?.entryID == entryID {
             latestGlobalMatch = nil
+        }
+    }
+
+    func removeEntry(entryID: UUID) throws {
+        guard !deletionProtectedEntryIDs.contains(entryID) else {
+            throw RuntimeStoreError.entryRemovalProtected(entryID)
+        }
+
+        _ = advanceManagedEnumerationRevision()
+        removeOutputSessions(entryID: entryID, except: nil)
+        runtimeGenerations.removeValue(forKey: entryID)
+        projectionRevisions.removeValue(forKey: entryID)
+        operationIDs.removeValue(forKey: entryID)
+        entryLanes.removeValue(forKey: entryID)
+        knownEntries.removeValue(forKey: entryID)
+
+        if let entryRuntime = runtimes.removeValue(
+            forKey: entryID
+        ) {
+            entryRuntime.terminalSurface?.dispose()
+            entryRuntime.terminalSurface = nil
+        }
+        if latestGlobalMatch?.entryID == entryID {
+            latestGlobalMatch = nil
+        }
+        stopMonitoringIfIdle()
+    }
+
+    func disposeAllTerminalSurfaces() {
+        var disposedSurfaceIDs: Set<ObjectIdentifier> = []
+        for entryRuntime in runtimes.values {
+            guard let surface = entryRuntime.terminalSurface else {
+                continue
+            }
+            let surfaceID = ObjectIdentifier(surface)
+            if disposedSurfaceIDs.insert(surfaceID).inserted {
+                surface.dispose()
+            }
+            entryRuntime.terminalSurface = nil
         }
     }
 

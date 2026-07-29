@@ -73,3 +73,12 @@
 "Working Directory" = "工作目錄";
 "%lld running commands" = "%lld 個執行中的指令";
 "──── Session started %@ ────" = "──── 工作階段開始於 %@ ────";
+"Output View" = "輸出檢視";
+"Terminal" = "終端機";
+"Text" = "文字";
+"Metal rendering is unavailable. Using compatible rendering." = "Metal 算繪無法使用。正在使用相容算繪。";
+"Terminal rendering is unavailable. Showing text output." = "終端機算繪無法使用。正在顯示文字輸出。";
+"Read-only terminal output" = "唯讀終端機輸出";
+"Metal renderer" = "Metal 算繪器";
+"Compatible renderer" = "相容算繪器";
+"Text output fallback" = "文字輸出備援";

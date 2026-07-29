@@ -73,3 +73,12 @@
 "Working Directory" = "Répertoire de travail";
 "%lld running commands" = "%lld commandes en cours";
 "──── Session started %@ ────" = "──── Session démarrée %@ ────";
+"Output View" = "Affichage de la sortie";
+"Terminal" = "Terminal";
+"Text" = "Texte";
+"Metal rendering is unavailable. Using compatible rendering." = "Le rendu Metal est indisponible. Le rendu compatible est utilisé.";
+"Terminal rendering is unavailable. Showing text output." = "Le rendu du terminal est indisponible. Affichage de la sortie texte.";
+"Read-only terminal output" = "Sortie de terminal en lecture seule";
+"Metal renderer" = "Moteur de rendu Metal";
+"Compatible renderer" = "Moteur de rendu compatible";
+"Text output fallback" = "Sortie texte de secours";

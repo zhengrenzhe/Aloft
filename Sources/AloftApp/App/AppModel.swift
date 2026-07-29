@@ -53,7 +53,8 @@ final class AppModel {
             return AppModel(
                 workspace: try WorkspaceStore(repository: repository),
                 runtime: RuntimeStore(
-                    supervisor: ProcessSupervisor()
+                    supervisor: ProcessSupervisor(),
+                    terminalSurfaceFactory: .swiftTerm
                 ),
                 ghostty: GhosttyService()
             )
@@ -64,7 +65,8 @@ final class AppModel {
                     initialConfiguration: .empty
                 ),
                 runtime: RuntimeStore(
-                    supervisor: ProcessSupervisor()
+                    supervisor: ProcessSupervisor(),
+                    terminalSurfaceFactory: .swiftTerm
                 ),
                 ghostty: GhosttyService()
             )
@@ -109,6 +111,9 @@ final class AppModel {
 
     func deleteGroup(id: UUID) throws {
         let groupsBeforeDeletion = orderedGroups
+        let deletedEntryIDs = groupsBeforeDeletion.first {
+            $0.id == id
+        }?.entries.map(\.id) ?? []
         let deletedIndex = groupsBeforeDeletion.firstIndex {
             $0.id == id
         }
@@ -118,6 +123,9 @@ final class AppModel {
             id: id,
             liveEntryIDs: runtime.deletionProtectedEntryIDs
         )
+        for entryID in deletedEntryIDs {
+            try runtime.removeEntry(entryID: entryID)
+        }
 
         let selectedEntryStillExists = selectedEntryID.flatMap {
             entry(id: $0)
@@ -203,6 +211,7 @@ final class AppModel {
             in: groupID,
             isLive: runtime.deletionProtectedEntryIDs.contains(id)
         )
+        try runtime.removeEntry(entryID: id)
 
         if deletingSelection, selectedGroupID == groupID {
             let entries = orderedEntries(in: groupID)

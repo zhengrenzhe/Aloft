@@ -73,3 +73,12 @@
 "Working Directory" = "작업 디렉터리";
 "%lld running commands" = "실행 중인 명령 %lld개";
 "──── Session started %@ ────" = "──── 세션 시작 %@ ────";
+"Output View" = "출력 보기";
+"Terminal" = "터미널";
+"Text" = "텍스트";
+"Metal rendering is unavailable. Using compatible rendering." = "Metal 렌더링을 사용할 수 없습니다. 호환 렌더링을 사용합니다.";
+"Terminal rendering is unavailable. Showing text output." = "터미널 렌더링을 사용할 수 없습니다. 텍스트 출력을 표시합니다.";
+"Read-only terminal output" = "읽기 전용 터미널 출력";
+"Metal renderer" = "Metal 렌더러";
+"Compatible renderer" = "호환 렌더러";
+"Text output fallback" = "텍스트 출력 대체 모드";

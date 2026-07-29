@@ -73,3 +73,12 @@
 "Working Directory" = "Рабочий каталог";
 "%lld running commands" = "Выполняющихся команд: %lld";
 "──── Session started %@ ────" = "──── Сеанс запущен %@ ────";
+"Output View" = "Представление вывода";
+"Terminal" = "Терминал";
+"Text" = "Текст";
+"Metal rendering is unavailable. Using compatible rendering." = "Рендеринг Metal недоступен. Используется совместимый рендеринг.";
+"Terminal rendering is unavailable. Showing text output." = "Рендеринг терминала недоступен. Отображается текстовый вывод.";
+"Read-only terminal output" = "Вывод терминала только для чтения";
+"Metal renderer" = "Рендерер Metal";
+"Compatible renderer" = "Совместимый рендерер";
+"Text output fallback" = "Резервный текстовый вывод";

@@ -73,3 +73,12 @@
 "Working Directory" = "Working Directory";
 "%lld running commands" = "%lld running commands";
 "──── Session started %@ ────" = "──── Session started %@ ────";
+"Output View" = "Output View";
+"Terminal" = "Terminal";
+"Text" = "Text";
+"Metal rendering is unavailable. Using compatible rendering." = "Metal rendering is unavailable. Using compatible rendering.";
+"Terminal rendering is unavailable. Showing text output." = "Terminal rendering is unavailable. Showing text output.";
+"Read-only terminal output" = "Read-only terminal output";
+"Metal renderer" = "Metal renderer";
+"Compatible renderer" = "Compatible renderer";
+"Text output fallback" = "Text output fallback";

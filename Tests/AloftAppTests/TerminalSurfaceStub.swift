@@ -3,6 +3,9 @@ import Foundation
 @testable import AloftApp
 
 final class TerminalSurfaceStub: TerminalSurface, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedDisposeCount = 0
+
     @MainActor let nativeView: NSView
     @MainActor var rendererState: TerminalRendererState
     @MainActor var onRendererStateChange:
@@ -23,5 +26,14 @@ final class TerminalSurfaceStub: TerminalSurface, @unchecked Sendable {
     func discard(generation: UUID) {}
     func resize(_ size: TerminalSize, generation: UUID) {}
     func clear() {}
-    func dispose() {}
+
+    func dispose() {
+        lock.withLock {
+            recordedDisposeCount += 1
+        }
+    }
+
+    var disposeCount: Int {
+        lock.withLock { recordedDisposeCount }
+    }
 }

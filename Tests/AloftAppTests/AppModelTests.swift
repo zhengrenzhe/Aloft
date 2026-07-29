@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 @testable import AloftApp
@@ -26,6 +27,135 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(
             fixture.model.selectedEntryID,
             fixture.model.workspace.configuration.groups[0].entries[0].id
+        )
+    }
+
+    func testDeletingEntryDisposesItsTerminalAfterWorkspaceDeletion() throws {
+        let fixture = try makeAppModel(
+            groupNamesAndEntryNames: [("Frontend", ["One"])]
+        )
+        let group = try XCTUnwrap(
+            fixture.model.workspace.configuration.groups.first
+        )
+        let entry = try XCTUnwrap(group.entries.first)
+        let surface = TerminalSurfaceStub(nativeView: NSView())
+        fixture.model.runtime.runtime(for: entry.id).terminalSurface =
+            surface
+
+        try fixture.model.deleteEntry(id: entry.id, in: group.id)
+
+        XCTAssertEqual(surface.disposeCount, 1)
+        XCTAssertNil(fixture.model.runtime.runtimes[entry.id])
+    }
+
+    func testDeletingGroupDisposesEveryEntryTerminal() throws {
+        let fixture = try makeAppModel(
+            groupNamesAndEntryNames: [
+                ("Frontend", ["One", "Two"])
+            ]
+        )
+        let group = try XCTUnwrap(
+            fixture.model.workspace.configuration.groups.first
+        )
+        let surfaces = group.entries.map { entry in
+            let surface = TerminalSurfaceStub(nativeView: NSView())
+            fixture.model.runtime.runtime(for: entry.id).terminalSurface =
+                surface
+            return surface
+        }
+
+        try fixture.model.deleteGroup(id: group.id)
+
+        XCTAssertEqual(surfaces.map(\.disposeCount), [1, 1])
+        XCTAssertTrue(
+            group.entries.allSatisfy {
+                fixture.model.runtime.runtimes[$0.id] == nil
+            }
+        )
+    }
+
+    func testFailedWorkspaceDeletionDoesNotDisposeTerminal() throws {
+        let fixture = try makeAppModel(
+            groupNamesAndEntryNames: [("Frontend", ["One"])]
+        )
+        let group = try XCTUnwrap(
+            fixture.model.workspace.configuration.groups.first
+        )
+        let entry = try XCTUnwrap(group.entries.first)
+        let surface = TerminalSurfaceStub(nativeView: NSView())
+        fixture.model.runtime.runtime(for: entry.id).terminalSurface =
+            surface
+
+        try FileManager.default.removeItem(at: fixture.directory)
+        try Data("not-a-directory".utf8).write(
+            to: fixture.directory
+        )
+
+        XCTAssertThrowsError(
+            try fixture.model.deleteEntry(
+                id: entry.id,
+                in: group.id
+            )
+        )
+        XCTAssertEqual(surface.disposeCount, 0)
+        XCTAssertNotNil(fixture.model.entry(id: entry.id))
+        XCTAssertIdentical(
+            fixture.model.runtime.runtimes[entry.id]?.terminalSurface,
+            surface
+        )
+    }
+
+    func testRuntimeRemovalRejectsLiveAndProtectedEntries() {
+        let runtime = RuntimeStore(supervisor: ProcessSupervisor())
+        let liveID = UUID()
+        let protectedID = UUID()
+        let liveSurface = TerminalSurfaceStub(nativeView: NSView())
+        let protectedSurface = TerminalSurfaceStub(nativeView: NSView())
+        let liveRuntime = runtime.runtime(for: liveID)
+        liveRuntime.process = runningSnapshot(
+            entryID: liveID,
+            pid: 801
+        )
+        liveRuntime.terminalSurface = liveSurface
+        runtime.runtime(for: protectedID).terminalSurface =
+            protectedSurface
+        _ = runtime.reserveOperations(entryIDs: [protectedID])
+
+        XCTAssertThrowsError(
+            try runtime.removeEntry(entryID: liveID)
+        ) {
+            XCTAssertEqual(
+                $0 as? RuntimeStoreError,
+                .entryRemovalProtected(liveID)
+            )
+        }
+        XCTAssertThrowsError(
+            try runtime.removeEntry(entryID: protectedID)
+        ) {
+            XCTAssertEqual(
+                $0 as? RuntimeStoreError,
+                .entryRemovalProtected(protectedID)
+            )
+        }
+        XCTAssertEqual(liveSurface.disposeCount, 0)
+        XCTAssertEqual(protectedSurface.disposeCount, 0)
+        XCTAssertNotNil(runtime.runtimes[liveID])
+        XCTAssertNotNil(runtime.runtimes[protectedID])
+    }
+
+    func testDisposeAllTerminalSurfacesIsIdempotent() {
+        let runtime = RuntimeStore(supervisor: ProcessSupervisor())
+        let surface = TerminalSurfaceStub(nativeView: NSView())
+        runtime.runtime(for: UUID()).terminalSurface = surface
+
+        runtime.disposeAllTerminalSurfaces()
+        runtime.disposeAllTerminalSurfaces()
+
+        XCTAssertEqual(surface.disposeCount, 1)
+        XCTAssertTrue(
+            runtime.runtimes.values.allSatisfy {
+                $0.terminalSurface == nil
+            }
         )
     }
 

@@ -73,3 +73,12 @@
 "Working Directory" = "作業ディレクトリ";
 "%lld running commands" = "%lld 件の実行中コマンド";
 "──── Session started %@ ────" = "──── セッション開始 %@ ────";
+"Output View" = "出力表示";
+"Terminal" = "ターミナル";
+"Text" = "テキスト";
+"Metal rendering is unavailable. Using compatible rendering." = "Metal レンダリングを利用できません。互換レンダリングを使用しています。";
+"Terminal rendering is unavailable. Showing text output." = "ターミナルレンダリングを利用できません。テキスト出力を表示しています。";
+"Read-only terminal output" = "読み取り専用のターミナル出力";
+"Metal renderer" = "Metal レンダラー";
+"Compatible renderer" = "互換レンダラー";
+"Text output fallback" = "テキスト出力フォールバック";

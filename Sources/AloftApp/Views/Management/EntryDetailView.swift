@@ -121,6 +121,7 @@ struct EntryDetailView: View {
                     .tag(OutputDisplayMode.text)
             }
             .pickerStyle(.segmented)
+            .accessibilityLabel(L10n.string("Output View"))
 
             if let fallbackMessage = fallbackMessage(
                 for: entryRuntime.terminalRendererState
@@ -131,6 +132,7 @@ struct EntryDetailView: View {
                 )
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                    .accessibilityLabel(fallbackMessage)
             }
 
             outputView(for: entryRuntime)
@@ -211,11 +213,41 @@ struct EntryDetailView: View {
         if entryRuntime.outputDisplayMode == .terminal,
            let surface = entryRuntime.terminalSurface {
             TerminalOutputView(surface: surface)
+                .accessibilityLabel(
+                    L10n.string("Read-only terminal output")
+                )
+                .accessibilityValue(
+                    rendererAccessibilityValue(
+                        for: entryRuntime.terminalRendererState
+                    )
+                )
         } else {
             ReadOnlyOutputView(
                 text: entryRuntime.output.displayText,
                 autoScroll: autoScroll
             )
+                .accessibilityLabel(
+                    L10n.string(
+                        entryRuntime.outputDisplayMode == .terminal
+                            ? "Text output fallback"
+                            : "Text"
+                    )
+                )
+        }
+    }
+
+    private func rendererAccessibilityValue(
+        for rendererState: TerminalRendererState
+    ) -> String {
+        switch rendererState {
+        case .awaitingWindow:
+            L10n.string("Terminal")
+        case .metal:
+            L10n.string("Metal renderer")
+        case .coreGraphicsFallback:
+            L10n.string("Compatible renderer")
+        case .unavailable:
+            L10n.string("Text output fallback")
         }
     }
 

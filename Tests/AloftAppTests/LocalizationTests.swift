@@ -59,6 +59,21 @@ final class LocalizationTests: XCTestCase {
         )
     }
 
+    func testEnglishContainsTerminalV2Keys() throws {
+        let v2Keys: Set<String> = [
+            "Output View",
+            "Terminal",
+            "Text",
+            "Metal rendering is unavailable. Using compatible rendering.",
+            "Terminal rendering is unavailable. Showing text output.",
+        ]
+
+        XCTAssertTrue(
+            Set(try localization("en").keys)
+                .isSuperset(of: v2Keys)
+        )
+    }
+
     private func localization(
         _ identifier: String
     ) throws -> [String: String] {

@@ -73,3 +73,12 @@
 "Working Directory" = "دليل العمل";
 "%lld running commands" = "%lld من الأوامر قيد التشغيل";
 "──── Session started %@ ────" = "──── بدأت الجلسة %@ ────";
+"Output View" = "عرض المخرجات";
+"Terminal" = "الطرفية";
+"Text" = "نص";
+"Metal rendering is unavailable. Using compatible rendering." = "تصيير Metal غير متاح. يُستخدم التصيير المتوافق.";
+"Terminal rendering is unavailable. Showing text output." = "تصيير الطرفية غير متاح. تُعرض المخرجات النصية.";
+"Read-only terminal output" = "مخرجات طرفية للقراءة فقط";
+"Metal renderer" = "عارض Metal";
+"Compatible renderer" = "عارض متوافق";
+"Text output fallback" = "إخراج نصي احتياطي";

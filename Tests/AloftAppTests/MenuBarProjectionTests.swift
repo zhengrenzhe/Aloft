@@ -420,6 +420,8 @@ final class ApplicationTerminationStateTests: XCTestCase {
 final class AppDelegateTerminationTests: XCTestCase {
     func testNoManagedWorkTerminatesWithoutStartingCoordinator() {
         let model = terminationModel(entries: [])
+        let surface = TerminalSurfaceStub(nativeView: NSView())
+        model.runtime.runtime(for: UUID()).terminalSurface = surface
         var coordinatorCallCount = 0
         let delegate = AppDelegate(
             model: model,
@@ -439,6 +441,7 @@ final class AppDelegateTerminationTests: XCTestCase {
 
         XCTAssertEqual(reply, .terminateNow)
         XCTAssertEqual(coordinatorCallCount, 0)
+        XCTAssertEqual(surface.disposeCount, 1)
     }
 
     func testProtectedOnlyAndDuplicateRequestsRunOneCoordinatorAndReplyOnce() async {
@@ -450,8 +453,11 @@ final class AppDelegateTerminationTests: XCTestCase {
         )
         let model = terminationModel(entries: [entry])
         _ = model.runtime.reserveOperations(entryIDs: [entry.id])
+        let surface = TerminalSurfaceStub(nativeView: NSView())
+        model.runtime.runtime(for: entry.id).terminalSurface = surface
         let gate = TerminationOperationGate()
         var replies: [Bool] = []
+        var disposeCountsAtReply: [Int] = []
         var alerts: [TerminationAlertPresentation] = []
         let delegate = AppDelegate(
             model: model,
@@ -459,6 +465,7 @@ final class AppDelegateTerminationTests: XCTestCase {
                 await gate.run()
             },
             replyToTermination: {
+                disposeCountsAtReply.append(surface.disposeCount)
                 replies.append($0)
             },
             presentTerminationAlert: {
@@ -483,7 +490,40 @@ final class AppDelegateTerminationTests: XCTestCase {
         let coordinatorCallCount = await gate.callCount
         XCTAssertEqual(coordinatorCallCount, 1)
         XCTAssertEqual(replies, [true])
+        XCTAssertEqual(disposeCountsAtReply, [1])
+        XCTAssertEqual(surface.disposeCount, 1)
         XCTAssertEqual(alerts, [])
+    }
+
+    func testCancelledTerminationPreservesTerminalSurfaces() async {
+        let entry = terminationEntry(
+            id: UUID(
+                uuidString: "00000000-0000-0000-0000-000000000011"
+            )!,
+            name: "Reserved"
+        )
+        let model = terminationModel(entries: [entry])
+        _ = model.runtime.reserveOperations(entryIDs: [entry.id])
+        let surface = TerminalSurfaceStub(nativeView: NSView())
+        model.runtime.runtime(for: entry.id).terminalSurface = surface
+        var replies: [Bool] = []
+        let delegate = AppDelegate(
+            model: model,
+            stopAllForTermination: { .cancelled },
+            replyToTermination: { replies.append($0) }
+        )
+
+        XCTAssertEqual(
+            delegate.applicationShouldTerminate(.shared),
+            .terminateLater
+        )
+        let completed = await waitForTerminationTest {
+            !replies.isEmpty
+        }
+
+        XCTAssertTrue(completed)
+        XCTAssertEqual(replies, [false])
+        XCTAssertEqual(surface.disposeCount, 0)
     }
 
     func testRemainingPresentsOneAlertBeforeNegativeReply() async {
@@ -500,6 +540,9 @@ final class AppDelegateTerminationTests: XCTestCase {
         _ = model.runtime.reserveOperations(
             entryIDs: [namedEntry.id, missingID]
         )
+        let surface = TerminalSurfaceStub(nativeView: NSView())
+        model.runtime.runtime(for: namedEntry.id).terminalSurface =
+            surface
         var events: [String] = []
         var alerts: [TerminationAlertPresentation] = []
         let delegate = AppDelegate(
@@ -533,6 +576,7 @@ final class AppDelegateTerminationTests: XCTestCase {
         XCTAssertEqual(reply, .terminateLater)
         XCTAssertTrue(completed)
         XCTAssertEqual(events, ["alert", "reply:false"])
+        XCTAssertEqual(surface.disposeCount, 0)
         XCTAssertEqual(alerts.count, 1)
         XCTAssertEqual(
             alerts[0].informativeText,

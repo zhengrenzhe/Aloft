@@ -171,6 +171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         switch disposition {
         case .terminateNow:
+            model.runtime.disposeAllTerminalSurfaces()
             return .terminateNow
         case .awaitDeferredTermination:
             return .terminateLater
@@ -202,6 +203,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let alert = completion.alert {
             presentTerminationAlert(alert)
+        }
+        if completion.shouldTerminate {
+            model.runtime.disposeAllTerminalSurfaces()
         }
         replyToTermination(completion.shouldTerminate)
         terminationState.didReply()
