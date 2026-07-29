@@ -36,7 +36,7 @@ case "${1:-run}" in
     ;;
 esac
 
-readonly PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly DIST_DIR="$PROJECT_ROOT/dist"
 readonly APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 readonly APP_CONTENTS="$APP_BUNDLE/Contents"
@@ -48,6 +48,44 @@ cd "$PROJECT_ROOT"
 
 process_is_running() {
   /usr/bin/pgrep -x "$APP_NAME" >/dev/null 2>&1
+}
+
+validate_dist_directory() {
+  local physical_dist
+
+  if [[ -L "$DIST_DIR" ]]; then
+    echo "error: refusing symlinked distribution directory $DIST_DIR" >&2
+    exit 1
+  fi
+  if [[ ! -d "$DIST_DIR" ]]; then
+    echo "error: distribution path is not a directory: $DIST_DIR" >&2
+    exit 1
+  fi
+
+  physical_dist="$(cd "$DIST_DIR" && pwd -P)" || {
+    echo "error: could not resolve distribution directory $DIST_DIR" >&2
+    exit 1
+  }
+  if [[ "$physical_dist" != "$PROJECT_ROOT/dist" ]]; then
+    echo "error: distribution directory resolves outside the project: $physical_dist" >&2
+    exit 1
+  fi
+}
+
+prepare_dist_directory() {
+  if [[ -L "$DIST_DIR" ]]; then
+    echo "error: refusing symlinked distribution directory $DIST_DIR" >&2
+    exit 1
+  fi
+  if [[ -e "$DIST_DIR" && ! -d "$DIST_DIR" ]]; then
+    echo "error: distribution path is not a directory: $DIST_DIR" >&2
+    exit 1
+  fi
+  if [[ ! -e "$DIST_DIR" ]]; then
+    /bin/mkdir "$DIST_DIR"
+  fi
+
+  validate_dist_directory
 }
 
 request_existing_app_to_quit() {
@@ -75,6 +113,9 @@ request_existing_app_to_quit() {
     fi
     /bin/sleep 0.1
   done
+  if ! process_is_running; then
+    return
+  fi
 
   echo "error: an existing $APP_NAME process is still running after 6 seconds." >&2
   echo "A second instance was not built or launched." >&2
@@ -101,7 +142,6 @@ stage_app_bundle() {
     exit 1
   fi
 
-  /bin/mkdir -p "$DIST_DIR"
   staging_root="$(/usr/bin/mktemp -d "$DIST_DIR/.aloft-stage.XXXXXX")"
   staged_bundle="$staging_root/$APP_NAME.app"
   staged_contents="$staged_bundle/Contents"
@@ -145,6 +185,7 @@ PLIST
 
   /usr/bin/plutil -lint "$staged_plist" >/dev/null
 
+  validate_dist_directory
   if [[ "$APP_BUNDLE" != "$PROJECT_ROOT/dist/Aloft.app" ]]; then
     echo "error: refusing to replace unexpected bundle path $APP_BUNDLE" >&2
     exit 1
@@ -168,12 +209,17 @@ verify_app_started() {
     fi
     /bin/sleep 0.1
   done
+  if process_is_running; then
+    echo "$APP_NAME is running from $APP_BUNDLE"
+    return
+  fi
 
   echo "error: $APP_NAME did not appear within 5 seconds after launch." >&2
   echo "Run '$0 --logs' to inspect startup logs." >&2
   exit 1
 }
 
+prepare_dist_directory
 request_existing_app_to_quit
 stage_app_bundle
 
