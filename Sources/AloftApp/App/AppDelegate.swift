@@ -123,6 +123,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let presentTerminationAlert: PresentTerminationAlert
     private var terminationState = ApplicationTerminationState()
     private var terminationTask: Task<Void, Never>?
+    private var terminalBenchmarkController:
+        ReleaseTerminalBenchmarkController?
 
     override convenience init() {
         self.init(model: AppModel.bootstrap())
@@ -158,6 +160,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(
         _ notification: Notification
     ) {
+        if let configuration =
+            ReleaseTerminalBenchmarkConfiguration.resolve(
+                environment:
+                    ProcessInfo.processInfo.environment
+            ) {
+            let controller =
+                ReleaseTerminalBenchmarkController(
+                    configuration: configuration
+                )
+            terminalBenchmarkController = controller
+            controller.start()
+            return
+        }
         NSApp.setActivationPolicy(.accessory)
     }
 

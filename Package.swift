@@ -48,5 +48,15 @@ let package = Package(
             name: "AloftProcessTests",
             dependencies: ["AloftApp", "AloftProcess"]
         ),
+        .testTarget(
+            name: "AloftPerformanceTests",
+            dependencies: [
+                "AloftApp",
+                .product(
+                    name: "SwiftTerm",
+                    package: "SwiftTerm"
+                ),
+            ]
+        ),
     ]
 )

@@ -149,6 +149,7 @@ stage_app_bundle() {
   local build_bin_path
   local build_binary
   local build_resource_bundle
+  local build_swiftterm_resource_bundle
   local staging_root
   local staged_bundle
   local staged_contents
@@ -161,6 +162,7 @@ stage_app_bundle() {
   build_bin_path="$(swift build -c "$BUILD_CONFIGURATION" --show-bin-path)"
   build_binary="$build_bin_path/$APP_NAME"
   build_resource_bundle="$build_bin_path/Aloft_AloftApp.bundle"
+  build_swiftterm_resource_bundle="$build_bin_path/SwiftTerm_SwiftTerm.bundle"
 
   if [[ ! -x "$build_binary" ]]; then
     echo "error: SwiftPM did not produce executable $build_binary" >&2
@@ -168,6 +170,10 @@ stage_app_bundle() {
   fi
   if [[ ! -d "$build_resource_bundle" ]]; then
     echo "error: SwiftPM did not produce resource bundle $build_resource_bundle" >&2
+    exit 1
+  fi
+  if [[ ! -d "$build_swiftterm_resource_bundle" ]]; then
+    echo "error: SwiftPM did not produce resource bundle $build_swiftterm_resource_bundle" >&2
     exit 1
   fi
 
@@ -190,6 +196,9 @@ stage_app_bundle() {
   /usr/bin/ditto \
     "$build_resource_bundle" \
     "$staged_resources/Aloft_AloftApp.bundle"
+  /usr/bin/ditto \
+    "$build_swiftterm_resource_bundle" \
+    "$staged_resources/SwiftTerm_SwiftTerm.bundle"
 
   /bin/cat >"$staged_plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
