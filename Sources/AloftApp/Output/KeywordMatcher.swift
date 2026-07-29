@@ -1,5 +1,4 @@
 import Foundation
-import ICU
 
 struct KeywordMatchEvent: Equatable, Sendable {
     let entryID: UUID
@@ -19,6 +18,10 @@ struct KeywordMatcher: Sendable {
     private var patterns: [Pattern]
 
     init(entryID: UUID, keywords: [String]) {
+        precondition(
+            Unicode17Data.isValid,
+            "Aloft's embedded Unicode 17.0.0 tables failed integrity validation"
+        )
         self.entryID = entryID
         self.keywords = keywords
         var seenKeywords: Set<String> = []
@@ -151,7 +154,7 @@ struct KeywordMatcher: Sendable {
     }
 }
 
-private struct GraphemeToken: Equatable, Sendable {
+struct GraphemeToken: Equatable, Sendable {
     let scalars: [UInt32]
 
     init(scalars: [UInt32]) {
@@ -176,34 +179,32 @@ private struct GraphemeToken: Equatable, Sendable {
 }
 
 private struct GraphemeTokenBuilder: Sendable {
-    private var scalars: [Unicode.Scalar] = []
+    private var normalizer = Unicode17Normalizer.Builder()
     private var cachedToken: GraphemeToken?
 
-    var scalarCount: Int { scalars.count }
+    var scalarCount: Int { normalizer.count }
 
     mutating func append(_ scalar: Unicode.Scalar) {
-        scalars.append(contentsOf: String(scalar).decomposedStringWithCanonicalMapping.unicodeScalars)
+        normalizer.append(scalar.value)
         cachedToken = nil
     }
 
     mutating func reset() {
-        scalars.removeAll(keepingCapacity: true)
+        normalizer.reset()
         cachedToken = nil
     }
 
     mutating func token() -> GraphemeToken? {
-        guard !scalars.isEmpty else { return nil }
+        guard !normalizer.scalars.isEmpty else { return nil }
         if let cachedToken { return cachedToken }
-        var view = String.UnicodeScalarView()
-        view.append(contentsOf: scalars)
-        let token = GraphemeToken(scalars: Array(String(view).decomposedStringWithCanonicalMapping.unicodeScalars).map(\.value))
+        let token = GraphemeToken(scalars: normalizer.scalars)
         cachedToken = token
         return token
     }
 }
 
-private struct GraphemeBoundaryState: Sendable {
-    private var previousClass: UGraphemeClusterBreak?
+struct GraphemeBoundaryState: Sendable {
+    private var previousClass: Unicode17GraphemeBreakClass?
     private var regionalIndicatorCount = 0
     private var hasExtendedPictographicBeforeZWJ = false
     private var hasZWJAfterExtendedPictographic = false
@@ -211,9 +212,13 @@ private struct GraphemeBoundaryState: Sendable {
     private var hasIndicLinkerAfterConsonant = false
 
     mutating func startsNewCluster(before scalar: Unicode.Scalar) -> Bool {
-        let currentClass = graphemeClass(of: scalar)
-        let currentIsExtendedPictographic = isExtendedPictographic(scalar)
-        let currentIndicClass = indicConjunctClass(of: scalar)
+        startsNewCluster(before: scalar.value)
+    }
+
+    mutating func startsNewCluster(before scalar: UInt32) -> Bool {
+        let currentClass = Unicode17Data.graphemeBreakClass(of: scalar)
+        let currentIsExtendedPictographic = Unicode17Data.isExtendedPictographic(scalar)
+        let currentIndicClass = Unicode17Data.indicConjunctBreakClass(of: scalar)
         guard let previousClass else {
             consume(
                 currentClass,
@@ -225,25 +230,27 @@ private struct GraphemeBoundaryState: Sendable {
         }
 
         let didBreak: Bool
-        if previousClass == U_GCB_CR, currentClass == U_GCB_LF {
+        if previousClass == .cr, currentClass == .lf {
             didBreak = false
         } else if isControl(previousClass) || isControl(currentClass) {
             didBreak = true
-        } else if previousClass == U_GCB_L, [U_GCB_L, U_GCB_V, U_GCB_LV, U_GCB_LVT].contains(currentClass) {
+        } else if previousClass == .l, [.l, .v, .lv, .lvt].contains(currentClass) {
             didBreak = false
-        } else if [U_GCB_LV, U_GCB_V].contains(previousClass), [U_GCB_V, U_GCB_T].contains(currentClass) {
+        } else if [.lv, .v].contains(previousClass), [.v, .t].contains(currentClass) {
             didBreak = false
-        } else if [U_GCB_LVT, U_GCB_T].contains(previousClass), currentClass == U_GCB_T {
+        } else if [.lvt, .t].contains(previousClass), currentClass == .t {
             didBreak = false
-        } else if [U_GCB_EXTEND, U_GCB_ZWJ].contains(currentClass) || currentClass == U_GCB_SPACING_MARK {
+        } else if [.extend, .zwj].contains(currentClass) || currentClass == .spacingMark {
             didBreak = false
-        } else if previousClass == U_GCB_PREPEND {
+        } else if previousClass == .prepend {
             didBreak = false
-        } else if currentIndicClass == U_INCB_CONSONANT, hasIndicLinkerAfterConsonant {
+        } else if currentIndicClass == .consonant, hasIndicLinkerAfterConsonant {
             didBreak = false
         } else if currentIsExtendedPictographic, hasZWJAfterExtendedPictographic {
             didBreak = false
-        } else if previousClass == U_GCB_REGIONAL_INDICATOR, currentClass == U_GCB_REGIONAL_INDICATOR, regionalIndicatorCount % 2 == 1 {
+        } else if previousClass == .regionalIndicator,
+                  currentClass == .regionalIndicator,
+                  regionalIndicatorCount % 2 == 1 {
             didBreak = false
         } else {
             didBreak = true
@@ -267,8 +274,8 @@ private struct GraphemeBoundaryState: Sendable {
     }
 
     private mutating func consume(
-        _ currentClass: UGraphemeClusterBreak,
-        indicClass: UIndicConjunctBreak,
+        _ currentClass: Unicode17GraphemeBreakClass,
+        indicClass: Unicode17IndicConjunctBreakClass,
         isExtendedPictographic: Bool,
         didBreak: Bool
     ) {
@@ -279,7 +286,7 @@ private struct GraphemeBoundaryState: Sendable {
             hasIndicConsonantBeforeLinker = false
             hasIndicLinkerAfterConsonant = false
         }
-        if currentClass == U_GCB_REGIONAL_INDICATOR {
+        if currentClass == .regionalIndicator {
             regionalIndicatorCount += 1
         } else {
             regionalIndicatorCount = 0
@@ -287,41 +294,45 @@ private struct GraphemeBoundaryState: Sendable {
         if isExtendedPictographic {
             hasExtendedPictographicBeforeZWJ = true
             hasZWJAfterExtendedPictographic = false
-        } else if currentClass == U_GCB_EXTEND {
+        } else if currentClass == .extend {
             // Extend before ZWJ preserves GB11 context; Extend after ZWJ invalidates it.
             hasZWJAfterExtendedPictographic = false
-        } else if currentClass == U_GCB_ZWJ {
+        } else if currentClass == .zwj {
             hasZWJAfterExtendedPictographic = hasExtendedPictographicBeforeZWJ
             hasExtendedPictographicBeforeZWJ = false
         } else {
             hasExtendedPictographicBeforeZWJ = false
             hasZWJAfterExtendedPictographic = false
         }
-        if indicClass == U_INCB_CONSONANT {
+        if indicClass == .consonant {
             hasIndicConsonantBeforeLinker = true
             hasIndicLinkerAfterConsonant = false
-        } else if indicClass == U_INCB_LINKER {
+        } else if indicClass == .linker {
             hasIndicLinkerAfterConsonant = hasIndicConsonantBeforeLinker
-        } else if indicClass != U_INCB_EXTEND {
+        } else if indicClass != .extend {
             hasIndicConsonantBeforeLinker = false
             hasIndicLinkerAfterConsonant = false
         }
         previousClass = currentClass
     }
 
-    private func graphemeClass(of scalar: Unicode.Scalar) -> UGraphemeClusterBreak {
-        UGraphemeClusterBreak(rawValue: UInt32(u_getIntPropertyValue(Int32(scalar.value), UCHAR_GRAPHEME_CLUSTER_BREAK)))
+    private func isControl(_ value: Unicode17GraphemeBreakClass) -> Bool {
+        [.cr, .lf, .control].contains(value)
     }
+}
 
-    private func isExtendedPictographic(_ scalar: Unicode.Scalar) -> Bool {
-        u_hasBinaryProperty(Int32(scalar.value), UCHAR_EXTENDED_PICTOGRAPHIC) != 0
-    }
-
-    private func indicConjunctClass(of scalar: Unicode.Scalar) -> UIndicConjunctBreak {
-        UIndicConjunctBreak(rawValue: UInt32(u_getIntPropertyValue(Int32(scalar.value), UCHAR_INDIC_CONJUNCT_BREAK)))
-    }
-
-    private func isControl(_ value: UGraphemeClusterBreak) -> Bool {
-        [U_GCB_CR, U_GCB_LF, U_GCB_CONTROL].contains(value)
+enum Unicode17GraphemeSegmenter {
+    static func boundaries(in scalars: [UInt32]) -> [Int] {
+        var state = GraphemeBoundaryState()
+        var result = [0]
+        for (index, scalar) in scalars.enumerated() {
+            if state.startsNewCluster(before: scalar) {
+                result.append(index)
+            }
+        }
+        if result.last != scalars.count {
+            result.append(scalars.count)
+        }
+        return result
     }
 }

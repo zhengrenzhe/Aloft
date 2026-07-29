@@ -16,7 +16,11 @@ let package = Package(
         ),
         .testTarget(
             name: "AloftAppTests",
-            dependencies: ["AloftApp"]
+            dependencies: ["AloftApp"],
+            resources: [
+                .copy("Fixtures/Unicode17/GraphemeBreakTest.txt"),
+                .copy("Fixtures/Unicode17/NormalizationTest.txt"),
+            ]
         ),
         .testTarget(
             name: "AloftProcessTests",

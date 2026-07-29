@@ -366,6 +366,28 @@ final class OutputPipelineTests: XCTestCase {
         )
     }
 
+    func testUnicode17AddedExtendScalarUsesPinnedBoundaryData() {
+        let cluster = "a\u{1ACF}"
+
+        XCTAssertTrue(
+            matches(
+                for: cluster,
+                keywords: ["a"],
+                splitByScalar: false
+            ).isEmpty
+        )
+        for splitByScalar in [false, true] {
+            XCTAssertEqual(
+                matches(
+                    for: cluster,
+                    keywords: [cluster],
+                    splitByScalar: splitByScalar
+                ),
+                [cluster]
+            )
+        }
+    }
+
     func testFourCrossReadUAX17TokenPresenceTransitions() {
         let cases: [(chunks: [String], keyword: String, expectedPresence: [Bool])] = [
             (["e", "\u{0301}", "e"], "e", [true, false, true]),
