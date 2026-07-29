@@ -223,6 +223,9 @@ final class RuntimeStore {
     private let processClient: RuntimeProcessClient
 
     @ObservationIgnored
+    private let terminalSurfaceFactory: TerminalSurfaceFactory?
+
+    @ObservationIgnored
     private var outputSessions: [UUID: OutputSession] = [:]
 
     @ObservationIgnored
@@ -278,17 +281,23 @@ final class RuntimeStore {
         liveEntryIDs.union(protectedEntryIDs)
     }
 
-    init(supervisor: ProcessSupervisor) {
+    init(
+        supervisor: ProcessSupervisor,
+        terminalSurfaceFactory: TerminalSurfaceFactory? = nil
+    ) {
         self.supervisor = supervisor
         processClient = RuntimeProcessClient(supervisor: supervisor)
+        self.terminalSurfaceFactory = terminalSurfaceFactory
     }
 
     init(
         supervisor: ProcessSupervisor,
-        processClient: RuntimeProcessClient
+        processClient: RuntimeProcessClient,
+        terminalSurfaceFactory: TerminalSurfaceFactory? = nil
     ) {
         self.supervisor = supervisor
         self.processClient = processClient
+        self.terminalSurfaceFactory = terminalSurfaceFactory
     }
 
     func runtime(for entryID: UUID) -> EntryRuntime {
@@ -853,6 +862,11 @@ final class RuntimeStore {
             generation: nextGeneration,
             retaining: entryRuntime.output
         )
+        let terminalSurface = prepareTerminalSession(
+            entryRuntime: entryRuntime,
+            entryID: entry.id,
+            generation: nextGeneration
+        )
 
         do {
             let snapshot = try await processClient.start(
@@ -860,6 +874,10 @@ final class RuntimeStore {
                 generation: nextGeneration
             ) {
                 [weak self] data in
+                terminalSurface?.feed(
+                    data,
+                    generation: nextGeneration
+                )
                 Task { @MainActor [weak self] in
                     self?.consume(
                         data,
@@ -872,6 +890,11 @@ final class RuntimeStore {
                 entryID: entry.id,
                 operationID: operationID
             ), runtimeGenerations[entry.id] == priorGeneration else {
+                discardPendingSession(
+                    entryID: entry.id,
+                    generation: nextGeneration,
+                    terminalSurface: terminalSurface
+                )
                 return supersededResult(entryID: entry.id)
             }
 
@@ -879,6 +902,10 @@ final class RuntimeStore {
             promoteOutputSession(
                 entryID: entry.id,
                 generation: nextGeneration
+            )
+            terminalSurface?.promote(
+                generation: nextGeneration,
+                at: Date()
             )
             entryRuntime.process = snapshot
             entryRuntime.lastError = nil
@@ -893,9 +920,18 @@ final class RuntimeStore {
                 entryID: entry.id,
                 operationID: operationID
             ), runtimeGenerations[entry.id] == priorGeneration else {
+                discardPendingSession(
+                    entryID: entry.id,
+                    generation: nextGeneration,
+                    terminalSurface: terminalSurface
+                )
                 return supersededResult(entryID: entry.id)
             }
-            outputSessions.removeValue(forKey: nextGeneration)
+            discardPendingSession(
+                entryID: entry.id,
+                generation: nextGeneration,
+                terminalSurface: terminalSurface
+            )
             return recordFailure(error, for: entryRuntime)
         }
     }
@@ -1057,6 +1093,93 @@ final class RuntimeStore {
             latestUpdate: separator,
             latestGlobalMatch: separator.matches.last
         )
+    }
+
+    private func prepareTerminalSession(
+        entryRuntime: EntryRuntime,
+        entryID: UUID,
+        generation: UUID
+    ) -> (any TerminalSurface)? {
+        let terminalSurface: (any TerminalSurface)?
+        if let retainedSurface = entryRuntime.terminalSurface {
+            terminalSurface = retainedSurface
+        } else if let terminalSurfaceFactory {
+            do {
+                let createdSurface = try terminalSurfaceFactory.makeSurface(
+                    entryID,
+                    terminalCallbacks(entryID: entryID)
+                )
+                entryRuntime.terminalSurface = createdSurface
+                entryRuntime.terminalRendererState =
+                    createdSurface.rendererState
+                createdSurface.onRendererStateChange = {
+                    [weak entryRuntime] rendererState in
+                    Task { @MainActor in
+                        entryRuntime?.terminalRendererState =
+                            rendererState
+                    }
+                }
+                terminalSurface = createdSurface
+            } catch {
+                entryRuntime.outputDisplayMode = .text
+                entryRuntime.terminalRendererState = .unavailable(
+                    error.localizedDescription
+                )
+                terminalSurface = nil
+            }
+        } else {
+            terminalSurface = nil
+        }
+        terminalSurface?.prepare(generation: generation)
+        return terminalSurface
+    }
+
+    private func terminalCallbacks(
+        entryID: UUID
+    ) -> TerminalSurfaceCallbacks {
+        let processClient = processClient
+        return TerminalSurfaceCallbacks(
+            writeProtocolReply: { [weak self] data, generation in
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.runtimeGenerations[entryID]
+                            == generation else {
+                        return
+                    }
+                    try? await processClient.write(
+                        entryID: entryID,
+                        generation: generation,
+                        data: data
+                    )
+                }
+            },
+            resizePTY: { [weak self] size, generation in
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.runtimeGenerations[entryID]
+                            == generation else {
+                        return
+                    }
+                    try? await processClient.resize(
+                        entryID: entryID,
+                        generation: generation,
+                        size: size
+                    )
+                }
+            }
+        )
+    }
+
+    private func discardPendingSession(
+        entryID: UUID,
+        generation: UUID,
+        terminalSurface: (any TerminalSurface)?
+    ) {
+        outputSessions.removeValue(forKey: generation)
+        terminalSurface?.discard(generation: generation)
+        if runtimeGenerations[entryID] == generation {
+            runtimeGenerations.removeValue(forKey: entryID)
+        }
     }
 
     private func promoteOutputSession(

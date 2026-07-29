@@ -5,6 +5,63 @@ import XCTest
 
 @MainActor
 final class RuntimeStoreTests: XCTestCase {
+    func testStartPromotesPendingTerminalBytesOnlyAfterLaunchSuccess()
+        async {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(
+                    outputBeforeReturn: Data("early".utf8)
+                ),
+            ]
+        )
+
+        let result = await fixture.runtime.start(fixture.entry)
+
+        XCTAssertTrue(result.isSuccess)
+        let generations = await fixture.process.startedGenerations
+        XCTAssertEqual(generations.count, 1)
+        XCTAssertEqual(fixture.surface.events, [
+            .prepare(generations[0]),
+            .promote(generations[0]),
+            .feed("early", generations[0]),
+        ])
+        XCTAssertEqual(fixture.surface.visibleText, "early")
+    }
+
+    func testFailedStartDiscardsPendingBytesAndPreservesRetainedSurface()
+        async {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(
+                    outputBeforeReturn: Data("old".utf8)
+                ),
+                .failure(
+                    .launchFailed,
+                    outputBeforeReturn: Data("new".utf8)
+                ),
+            ]
+        )
+
+        let first = await fixture.runtime.start(fixture.entry)
+        let second = await fixture.runtime.start(fixture.entry)
+
+        XCTAssertTrue(first.isSuccess)
+        XCTAssertFalse(second.isSuccess)
+        let generations = await fixture.process.startedGenerations
+        XCTAssertEqual(generations.count, 2)
+        XCTAssertEqual(fixture.surface.visibleText, "old")
+        XCTAssertTrue(
+            fixture.surface.events.contains(
+                .discard(generations[1])
+            )
+        )
+        XCTAssertFalse(
+            fixture.surface.events.contains(
+                .feed("new", generations[1])
+            )
+        )
+    }
+
     func testStartAllStreamsIndependentOutputAndStopAllStopsEveryGroup() async throws {
         let runtime = RuntimeStore(supervisor: ProcessSupervisor())
         let entries = [

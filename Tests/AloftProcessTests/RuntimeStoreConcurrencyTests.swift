@@ -5,6 +5,59 @@ import XCTest
 
 @MainActor
 final class RuntimeStoreConcurrencyTests: XCTestCase {
+    func testLateOldGenerationCannotFeedResizeOrWriteAfterRestart()
+        async throws {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(
+                    outputBeforeReturn: Data("first".utf8)
+                ),
+                .success(
+                    outputBeforeReturn: Data("second".utf8)
+                ),
+            ]
+        )
+        let first = await fixture.runtime.start(fixture.entry)
+        XCTAssertTrue(first.isSuccess)
+        let generationsAfterStart = await fixture.process
+            .startedGenerations
+        let oldGeneration = try XCTUnwrap(
+            generationsAfterStart.first
+        )
+        let oldCallbacks = try XCTUnwrap(
+            fixture.surface.callbacks(for: oldGeneration)
+        )
+
+        let restart = await fixture.runtime.restart(fixture.entry)
+        XCTAssertTrue(restart.isSuccess)
+        oldCallbacks.writeProtocolReply(
+            Data("stale-reply".utf8),
+            oldGeneration
+        )
+        oldCallbacks.resizePTY(
+            TerminalSize(
+                columns: 90,
+                rows: 30,
+                pixelWidth: 900,
+                pixelHeight: 600
+            )!,
+            oldGeneration
+        )
+        fixture.surface.feed(
+            Data("stale-output".utf8),
+            generation: oldGeneration
+        )
+        await Task.yield()
+
+        XCTAssertFalse(
+            fixture.surface.visibleText.contains("stale-output")
+        )
+        let writes = await fixture.process.writes
+        let resizes = await fixture.process.resizes
+        XCTAssertTrue(writes.isEmpty)
+        XCTAssertTrue(resizes.isEmpty)
+    }
+
     func testStartsPassDistinctGenerationsToProcessClient() async {
         let fake = ControlledProcessSupervisor()
         let entry = concurrencyEntry(name: "Generations")
