@@ -205,9 +205,10 @@ order. A failed or superseded launch discards its pending sink and leaves the
 currently displayed completed session unchanged.
 
 Deleting an entry disposes its terminal surface. Quitting Aloft disposes all
-surfaces after managed-process termination completes or termination is
-cancelled. Terminal history is memory-only and is not restored after Aloft
-relaunches.
+surfaces only after managed-process termination completes and Aloft has accepted
+termination. If termination is cancelled or live processes remain, the surfaces
+stay attached to their entries. Terminal history is memory-only and is not
+restored after Aloft relaunches.
 
 ## 6. PTY Read, Write, and Resize
 
