@@ -4,6 +4,13 @@ import XCTest
 
 @MainActor
 final class AppModelTests: XCTestCase {
+    func testNewEntryRuntimeDefaultsToTerminalMode() {
+        XCTAssertEqual(
+            EntryRuntime(entryID: UUID()).outputDisplayMode,
+            .terminal
+        )
+    }
+
     func testInitialSelectionUsesFirstOrderedGroupAndEntry() throws {
         let fixture = try makeAppModel(
             groupNamesAndEntryNames: [

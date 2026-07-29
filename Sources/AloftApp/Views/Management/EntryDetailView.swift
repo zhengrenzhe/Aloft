@@ -45,9 +45,9 @@ struct EntryDetailView: View {
 
     @ViewBuilder
     private func detail(for entry: CommandEntry) -> some View {
-        let entryRuntime = model.runtime.runtimes[entry.id]
-        let process = entryRuntime?.process
-        let isLive = process?.liveness == .running
+        let entryRuntime = model.runtime.runtime(for: entry.id)
+        let process = entryRuntime.process
+        let isLive = process.liveness == .running
 
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
@@ -68,7 +68,7 @@ struct EntryDetailView: View {
                 .font(.system(.body, design: .monospaced))
                 .textSelection(.enabled)
 
-            if isLive, let process,
+            if isLive,
                let pid = process.pid,
                let processGroupID = process.processGroupID {
                 Text(
@@ -83,7 +83,7 @@ struct EntryDetailView: View {
                     .textSelection(.enabled)
             }
 
-            if let match = entryRuntime?.output.latestMatch {
+            if let match = entryRuntime.output.latestMatch {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(
                         L10n.format(
@@ -101,18 +101,40 @@ struct EntryDetailView: View {
                 .accessibilityElement(children: .combine)
             }
 
-            if let lastError = entryRuntime?.lastError {
+            if let lastError = entryRuntime.lastError {
                 Text(lastError)
                     .font(.callout)
                     .foregroundStyle(.red)
                     .textSelection(.enabled)
             }
 
-            ReadOnlyOutputView(
-                text: entryRuntime?.output.displayText ?? "",
-                autoScroll: autoScroll
-            )
-            .frame(minHeight: 220)
+            Picker(
+                L10n.string("Output View"),
+                selection: Binding(
+                    get: { entryRuntime.outputDisplayMode },
+                    set: { entryRuntime.outputDisplayMode = $0 }
+                )
+            ) {
+                Text(L10n.string("Terminal"))
+                    .tag(OutputDisplayMode.terminal)
+                Text(L10n.string("Text"))
+                    .tag(OutputDisplayMode.text)
+            }
+            .pickerStyle(.segmented)
+
+            if let fallbackMessage = fallbackMessage(
+                for: entryRuntime.terminalRendererState
+            ) {
+                Label(
+                    fallbackMessage,
+                    systemImage: "info.circle"
+                )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            outputView(for: entryRuntime)
+                .frame(minHeight: 220)
 
             HStack {
                 Toggle(
@@ -179,6 +201,38 @@ struct EntryDetailView: View {
         }
         .task(id: entry.id) {
             await model.runtime.refreshAll()
+        }
+    }
+
+    @ViewBuilder
+    private func outputView(
+        for entryRuntime: EntryRuntime
+    ) -> some View {
+        if entryRuntime.outputDisplayMode == .terminal,
+           let surface = entryRuntime.terminalSurface {
+            TerminalOutputView(surface: surface)
+        } else {
+            ReadOnlyOutputView(
+                text: entryRuntime.output.displayText,
+                autoScroll: autoScroll
+            )
+        }
+    }
+
+    private func fallbackMessage(
+        for rendererState: TerminalRendererState
+    ) -> String? {
+        switch rendererState {
+        case .awaitingWindow, .metal:
+            nil
+        case .coreGraphicsFallback:
+            L10n.string(
+                "Metal rendering is unavailable. Using compatible rendering."
+            )
+        case .unavailable:
+            L10n.string(
+                "Terminal rendering is unavailable. Showing text output."
+            )
         }
     }
 
