@@ -65,6 +65,9 @@ readonly APP_MACOS="$APP_CONTENTS/MacOS"
 readonly APP_RESOURCES="$APP_CONTENTS/Resources"
 readonly APP_BINARY="$APP_MACOS/$APP_NAME"
 readonly INFO_PLIST="$APP_CONTENTS/Info.plist"
+readonly APP_ICON_SOURCE="$PROJECT_ROOT/Design/AppIcon.icon"
+readonly RELEASE_ARCHIVE="$DIST_DIR/$APP_NAME.zip"
+readonly ARCHIVE_SCRIPT="$PROJECT_ROOT/script/archive_release_bundle.sh"
 
 cd "$PROJECT_ROOT"
 
@@ -164,6 +167,7 @@ stage_app_bundle() {
   local staged_resources
   local staged_binary
   local staged_plist
+  local staged_icon_plist
 
   swift build -c "$BUILD_CONFIGURATION"
   build_bin_path="$(swift build -c "$BUILD_CONFIGURATION" --show-bin-path)"
@@ -191,6 +195,7 @@ stage_app_bundle() {
   staged_resources="$staged_contents/Resources"
   staged_binary="$staged_macos/$APP_NAME"
   staged_plist="$staged_contents/Info.plist"
+  staged_icon_plist="$staging_root/AppIcon.plist"
 
   cleanup_staging() {
     /bin/rm -rf "$staging_root"
@@ -206,6 +211,13 @@ stage_app_bundle() {
   /usr/bin/ditto \
     "$build_swiftterm_resource_bundle" \
     "$staged_resources/SwiftTerm_SwiftTerm.bundle"
+  /usr/bin/xcrun actool \
+    "$APP_ICON_SOURCE" \
+    --compile "$staged_resources" \
+    --platform macosx \
+    --minimum-deployment-target "$MIN_SYSTEM_VERSION" \
+    --app-icon AppIcon \
+    --output-partial-info-plist "$staged_icon_plist"
 
   if [[ ! -f "$staged_resources/Aloft_AloftApp.bundle/Info.plist" ]]; then
     echo "error: staged app does not satisfy the SwiftPM Aloft resource bundle lookup." >&2
@@ -213,6 +225,11 @@ stage_app_bundle() {
   fi
   if [[ ! -f "$staged_resources/SwiftTerm_SwiftTerm.bundle/Shaders.metal" ]]; then
     echo "error: staged app does not satisfy the SwiftTerm shader bundle lookup." >&2
+    exit 1
+  fi
+  if [[ ! -f "$staged_resources/AppIcon.icns" \
+      || ! -f "$staged_resources/Assets.car" ]]; then
+    echo "error: Icon Composer source did not produce the staged application icon." >&2
     exit 1
   fi
 
@@ -225,6 +242,10 @@ stage_app_bundle() {
   <string>$APP_NAME</string>
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>CFBundleIconName</key>
+  <string>AppIcon</string>
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleLocalizations</key>
@@ -407,6 +428,7 @@ install_app_bundle() {
 
   /usr/bin/plutil -lint "$INSTALLED_APP_BUNDLE/Contents/Info.plist" >/dev/null
   /usr/bin/codesign --verify --deep --strict --verbose=2 "$INSTALLED_APP_BUNDLE"
+  "$ARCHIVE_SCRIPT" "$DIST_DIR"
 
   if [[ "$had_existing" -eq 1 ]]; then
     /bin/rm -rf "$backup_bundle"
@@ -450,7 +472,8 @@ case "$MODE" in
     open_and_verify_app
     ;;
   stage-release)
-    echo "Staged release app at $APP_BUNDLE"
+    "$ARCHIVE_SCRIPT" "$DIST_DIR"
+    echo "Staged release archive at $RELEASE_ARCHIVE"
     ;;
   install-release)
     install_app_bundle
