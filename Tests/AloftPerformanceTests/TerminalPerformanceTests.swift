@@ -528,8 +528,6 @@ final class TerminalPerformanceTests: XCTestCase {
             let startResult = await runtimeStore.start(entry)
             try requireBenchmarkSuccess(startResult)
             print("  end-to-end stage=started")
-            runtime.outputDisplayMode = .text
-            runtime.outputDisplayMode = .terminal
             if let surface = holder.surface {
                 surface.resize(
                     TerminalSize(

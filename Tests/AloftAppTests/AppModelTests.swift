@@ -5,13 +5,6 @@ import XCTest
 
 @MainActor
 final class AppModelTests: XCTestCase {
-    func testNewEntryRuntimeDefaultsToTerminalMode() {
-        XCTAssertEqual(
-            EntryRuntime(entryID: UUID()).outputDisplayMode,
-            .terminal
-        )
-    }
-
     func testInitialSelectionUsesFirstOrderedGroupAndEntry() throws {
         let fixture = try makeAppModel(
             groupNamesAndEntryNames: [
@@ -691,6 +684,152 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(startCallCount, 0)
     }
 
+    func testFailedStopPublishesOneAttention() async throws {
+        let fake = ModelProcessClient()
+        let fixture = try makeAppModel(
+            groupNamesAndEntryNames: [("Frontend", ["One"])],
+            runtime: await makeRuntime(fake)
+        )
+        let entry = fixture.model.workspace.configuration
+            .groups[0].entries[0]
+        let running = runningSnapshot(entryID: entry.id, pid: 740)
+        await fake.enqueueStart(running, gate: nil)
+        let start = await fixture.model.runtime.start(entry)
+        XCTAssertTrue(start.isSuccess)
+        await fake.setStopResult(.timedOut(running), for: entry.id)
+
+        let task = try XCTUnwrap(
+            fixture.model.stopEntry(id: entry.id)
+        )
+        let result = await task.value
+
+        XCTAssertFalse(result.isSuccess)
+        XCTAssertEqual(
+            fixture.model.runtime.unacknowledgedAttentionItems.count,
+            1
+        )
+        XCTAssertEqual(
+            fixture.model.runtime.unacknowledgedAttentionItems.first?
+                .entryID,
+            entry.id
+        )
+    }
+
+    func testFailedRestartPublishesOneAttention() async throws {
+        let fake = ModelProcessClient()
+        let fixture = try makeAppModel(
+            groupNamesAndEntryNames: [("Frontend", ["One"])],
+            runtime: await makeRuntime(fake)
+        )
+        let entry = fixture.model.workspace.configuration
+            .groups[0].entries[0]
+        let running = runningSnapshot(entryID: entry.id, pid: 741)
+        await fake.enqueueStart(running, gate: nil)
+        let start = await fixture.model.runtime.start(entry)
+        XCTAssertTrue(start.isSuccess)
+        await fake.setStopResult(.timedOut(running), for: entry.id)
+
+        let task = try XCTUnwrap(
+            fixture.model.restartEntry(id: entry.id)
+        )
+        let result = await task.value
+
+        XCTAssertFalse(result.isSuccess)
+        XCTAssertEqual(
+            fixture.model.runtime.unacknowledgedAttentionItems.count,
+            1
+        )
+        XCTAssertEqual(
+            fixture.model.runtime.unacknowledgedAttentionItems.first?
+                .kind,
+            .operationFailure
+        )
+    }
+
+    func testGroupStopPublishesOneAggregatedAttention() async throws {
+        let fake = ModelProcessClient()
+        let fixture = try makeAppModel(
+            groupNamesAndEntryNames: [
+                ("Frontend", ["One", "Two"]),
+            ],
+            runtime: await makeRuntime(fake)
+        )
+        let group = fixture.model.workspace.configuration.groups[0]
+        for (index, entry) in group.entries.enumerated() {
+            let running = runningSnapshot(
+                entryID: entry.id,
+                pid: pid_t(750 + index)
+            )
+            await fake.enqueueStart(running, gate: nil)
+            let start = await fixture.model.runtime.start(entry)
+            XCTAssertTrue(start.isSuccess)
+            await fake.setStopResult(
+                .timedOut(running),
+                for: entry.id
+            )
+        }
+
+        let task = try XCTUnwrap(
+            fixture.model.stopGroup(id: group.id)
+        )
+        let results = await task.value
+
+        XCTAssertEqual(results.filter { !$0.isSuccess }.count, 2)
+        XCTAssertEqual(
+            fixture.model.runtime.unacknowledgedAttentionItems.count,
+            1
+        )
+        let item = try XCTUnwrap(
+            fixture.model.runtime.unacknowledgedAttentionItems.first
+        )
+        XCTAssertNil(item.entryID)
+        XCTAssertTrue(item.detail.contains("One"))
+        XCTAssertTrue(item.detail.contains("Two"))
+    }
+
+    func testGroupRestartPublishesOneAggregatedAttention() async throws {
+        let fake = ModelProcessClient()
+        let fixture = try makeAppModel(
+            groupNamesAndEntryNames: [
+                ("Frontend", ["One", "Two"]),
+            ],
+            runtime: await makeRuntime(fake)
+        )
+        let group = fixture.model.workspace.configuration.groups[0]
+        for (index, entry) in group.entries.enumerated() {
+            let running = runningSnapshot(
+                entryID: entry.id,
+                pid: pid_t(760 + index)
+            )
+            await fake.enqueueStart(running, gate: nil)
+            let start = await fixture.model.runtime.start(entry)
+            XCTAssertTrue(start.isSuccess)
+            await fake.setStopResult(
+                .timedOut(running),
+                for: entry.id
+            )
+        }
+
+        let task = try XCTUnwrap(
+            fixture.model.restartGroup(id: group.id)
+        )
+        let results = await task.value
+
+        XCTAssertEqual(results.filter { !$0.isSuccess }.count, 2)
+        XCTAssertEqual(
+            fixture.model.runtime.unacknowledgedAttentionItems.count,
+            1
+        )
+        let item = try XCTUnwrap(
+            fixture.model.runtime.unacknowledgedAttentionItems.first
+        )
+        XCTAssertEqual(item.kind, .operationFailure)
+        XCTAssertNil(item.entryID)
+        XCTAssertEqual(item.relatedEntryIDs, Set(group.entries.map(\.id)))
+        XCTAssertTrue(item.detail.contains("One"))
+        XCTAssertTrue(item.detail.contains("Two"))
+    }
+
     func testMalformedBootstrapDoesNotOverwriteConfiguration() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
@@ -709,45 +848,6 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url), malformed)
     }
 
-    func testOutputMutationChoosesAppendOnlyForStrictPrefixGrowth() {
-        XCTAssertEqual(
-            OutputTextMutation(oldText: "one", newText: "one\ntwo"),
-            .append("\ntwo")
-        )
-        XCTAssertEqual(
-            OutputTextMutation(oldText: "one\ntwo", newText: "two"),
-            .replace("two")
-        )
-        XCTAssertEqual(
-            OutputTextMutation(oldText: "one", newText: ""),
-            .replace("")
-        )
-        XCTAssertEqual(
-            OutputTextMutation(oldText: "one", newText: "one"),
-            .none
-        )
-    }
-
-    func testOutputBottomGeometryUsesPreUpdateViewport() {
-        XCTAssertTrue(
-            OutputScrollGeometry.isAtBottom(
-                visibleMaxY: 100,
-                documentMaxY: 100
-            )
-        )
-        XCTAssertTrue(
-            OutputScrollGeometry.isAtBottom(
-                visibleMaxY: 99.5,
-                documentMaxY: 100
-            )
-        )
-        XCTAssertFalse(
-            OutputScrollGeometry.isAtBottom(
-                visibleMaxY: 95,
-                documentMaxY: 100
-            )
-        )
-    }
 }
 
 @MainActor
@@ -792,6 +892,7 @@ private actor ModelProcessClient {
 
     private var queuedStarts: [QueuedStart] = []
     private var records: [UUID: ProcessSnapshot] = [:]
+    private var stopResults: [UUID: StopResult] = [:]
     private(set) var startCallCount = 0
 
     func enqueueStart(
@@ -801,6 +902,13 @@ private actor ModelProcessClient {
         queuedStarts.append(
             QueuedStart(snapshot: snapshot, gate: gate)
         )
+    }
+
+    func setStopResult(
+        _ result: StopResult,
+        for entryID: UUID
+    ) {
+        stopResults[entryID] = result
     }
 
     func client() -> RuntimeProcessClient {
@@ -845,6 +953,9 @@ private actor ModelProcessClient {
     private func stop(entryID: UUID) throws -> StopResult {
         guard records[entryID] != nil else {
             throw ProcessSupervisorError.unknownEntry
+        }
+        if let result = stopResults[entryID] {
+            return result
         }
         records[entryID] = stoppedModelSnapshot(entryID: entryID)
         return .stopped

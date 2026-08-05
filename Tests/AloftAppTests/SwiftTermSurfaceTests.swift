@@ -6,6 +6,54 @@ import XCTest
 
 @MainActor
 final class SwiftTermSurfaceTests: XCTestCase {
+    func testUpdateFontChangesTerminalRenderingFont() {
+        let callbacks = TerminalCallbacksRecorder()
+        let surface = SwiftTermSurface(
+            callbacks: callbacks.callbacks
+        )
+        let font = NSFont.monospacedSystemFont(
+            ofSize: 19,
+            weight: .regular
+        )
+
+        surface.updateFont(font)
+
+        XCTAssertEqual(
+            surface.terminalViewForTesting.font.pointSize,
+            19
+        )
+        XCTAssertEqual(
+            surface.terminalViewForTesting.font.fontName,
+            font.fontName
+        )
+    }
+
+    func testTerminalViewFeedRunsOnMainThread() async {
+        let callbacks = TerminalCallbacksRecorder()
+        let feedThreads = BooleanRecorder()
+        let surface = SwiftTermSurface(
+            callbacks: callbacks.callbacks,
+            beforeViewFeed: {
+                feedThreads.append(Thread.isMainThread)
+            }
+        )
+        let generation = UUID()
+        surface.prepare(generation: generation)
+        surface.promote(
+            generation: generation,
+            at: Date(timeIntervalSince1970: 0)
+        )
+        surface.feed(
+            Data("\u{1b}[36mcolored\u{1b}[0m".utf8),
+            generation: generation
+        )
+
+        await surface.waitUntilIdle()
+
+        XCTAssertFalse(feedThreads.values.isEmpty)
+        XCTAssertTrue(feedThreads.values.allSatisfy(\.self))
+    }
+
     func testTerminalProtocolReplyUsesActiveGeneration() async {
         let callbacks = TerminalCallbacksRecorder()
         let surface = SwiftTermSurface(
@@ -181,6 +229,85 @@ final class SwiftTermSurfaceTests: XCTestCase {
         )
     }
 
+    func testRestartReturnsScrolledViewportToNewestOutput() async {
+        let callbacks = TerminalCallbacksRecorder()
+        let surface = SwiftTermSurface(
+            callbacks: callbacks.callbacks
+        )
+        let firstGeneration = UUID()
+        surface.prepare(generation: firstGeneration)
+        surface.promote(
+            generation: firstGeneration,
+            at: Date(timeIntervalSince1970: 0)
+        )
+        let history = (0..<200)
+            .map { "history-\($0)\r\n" }
+            .joined()
+        surface.feed(
+            Data(history.utf8),
+            generation: firstGeneration
+        )
+        await surface.waitUntilIdle()
+
+        let view = surface.terminalViewForTesting
+        view.scroll(toPosition: 0)
+        XCTAssertEqual(view.scrollPosition, 0)
+
+        let secondGeneration = UUID()
+        surface.prepare(generation: secondGeneration)
+        surface.feed(
+            Data("newest-after-restart\r\n".utf8),
+            generation: secondGeneration
+        )
+        surface.promote(
+            generation: secondGeneration,
+            at: Date(timeIntervalSince1970: 1)
+        )
+        await surface.waitUntilIdle()
+
+        let terminal = view.getTerminal()
+        let bufferedText = String(
+            decoding: terminal.getBufferAsData(),
+            as: UTF8.self
+        )
+        XCTAssertTrue(
+            bufferedText.contains("newest-after-restart"),
+            "The PTY bytes did not reach SwiftTerm's buffer."
+        )
+        XCTAssertEqual(view.scrollPosition, 1)
+        XCTAssertTrue(
+            visibleTerminalText(terminal)
+                .contains("newest-after-restart")
+        )
+    }
+
+    func testDiscardingActiveGenerationRejectsLateFeed() async {
+        let callbacks = TerminalCallbacksRecorder()
+        let surface = SwiftTermSurface(
+            callbacks: callbacks.callbacks
+        )
+        let generation = UUID()
+        surface.prepare(generation: generation)
+        surface.promote(
+            generation: generation,
+            at: Date(timeIntervalSince1970: 0)
+        )
+        await surface.waitUntilIdle()
+
+        surface.discard(generation: generation)
+        surface.feed(
+            Data("late-after-discard".utf8),
+            generation: generation
+        )
+        await surface.waitUntilIdle()
+
+        XCTAssertFalse(
+            visibleTerminalText(
+                surface.terminalViewForTesting.getTerminal()
+            ).contains("late-after-discard")
+        )
+    }
+
     func testRendererStateMapsMetalAndFallbackOutcomes() {
         let callbacks = TerminalCallbacksRecorder()
         let metal = SwiftTermSurface(
@@ -263,6 +390,21 @@ final class SwiftTermSurfaceTests: XCTestCase {
         )
         XCTAssertTrue(callbacks.replies.isEmpty)
         XCTAssertTrue(callbacks.resizes.isEmpty)
+    }
+}
+
+private final class BooleanRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Bool] = []
+
+    var values: [Bool] {
+        lock.withLock { storage }
+    }
+
+    func append(_ value: Bool) {
+        lock.withLock {
+            storage.append(value)
+        }
     }
 }
 

@@ -8,7 +8,9 @@ struct ManagementWindowActivationAction {
 
     init(
         activateApplication: @escaping () -> Void = {
-            NSApplication.shared.activate()
+            NSApplication.shared.activate(
+                ignoringOtherApps: true
+            )
         },
         orderFront: @escaping (NSWindow) -> Void = {
             window in
@@ -23,6 +25,39 @@ struct ManagementWindowActivationAction {
     func perform(on window: NSWindow) {
         activateApplication()
         orderFront(window)
+    }
+
+    func performWithoutWindow() {
+        activateApplication()
+    }
+}
+
+@MainActor
+final class ManagementWindowRegistry {
+    static let shared = ManagementWindowRegistry()
+
+    private weak var window: NSWindow?
+    private let activationAction:
+        ManagementWindowActivationAction
+
+    init(
+        activationAction:
+            ManagementWindowActivationAction =
+                ManagementWindowActivationAction()
+    ) {
+        self.activationAction = activationAction
+    }
+
+    func register(_ window: NSWindow) {
+        self.window = window
+    }
+
+    func presentRegisteredWindow() {
+        guard let window else {
+            activationAction.performWithoutWindow()
+            return
+        }
+        activationAction.perform(on: window)
     }
 }
 
@@ -77,8 +112,9 @@ struct ManagementWindowActivationBridge:
         context: Context
     ) -> ManagementWindowAttachmentView {
         ManagementWindowAttachmentView { window in
-            ManagementWindowActivationAction()
-                .perform(on: window)
+            let registry = ManagementWindowRegistry.shared
+            registry.register(window)
+            registry.presentRegisteredWindow()
         }
     }
 

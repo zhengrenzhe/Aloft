@@ -139,6 +139,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let stopAllForTermination: StopAllForTermination
     private let replyToTermination: ReplyToTermination
     private let presentTerminationAlert: PresentTerminationAlert
+    private let userNotificationService:
+        any UserNotificationDelivering
     private var terminationState = ApplicationTerminationState()
     private var terminationTask: Task<Void, Never>?
     private var terminalBenchmarkController:
@@ -152,9 +154,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model: AppModel,
         stopAllForTermination: StopAllForTermination? = nil,
         replyToTermination: ReplyToTermination? = nil,
-        presentTerminationAlert: PresentTerminationAlert? = nil
+        presentTerminationAlert: PresentTerminationAlert? = nil,
+        userNotificationService:
+            (any UserNotificationDelivering)? = nil
     ) {
         self.model = model
+        let notifications = userNotificationService
+            ?? UserNotificationService()
+        self.userNotificationService = notifications
         self.stopAllForTermination = stopAllForTermination ?? {
             await TerminationCoordinator(
                 runtimeStore: model.runtime
@@ -173,6 +180,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.runModal()
         }
         super.init()
+        notifications.onOpenEntry = { [weak model] entryID in
+            model?.requestManagementRoute(entryID: entryID)
+        }
+        model.runtime.onAttention = { [weak notifications] item in
+            notifications?.deliver(item)
+        }
     }
 
     func applicationDidFinishLaunching(
@@ -192,6 +205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         NSApp.setActivationPolicy(.accessory)
+        userNotificationService.requestAuthorization()
         let environment = ProcessInfo.processInfo.environment
         DispatchQueue.main.async {
             StartupReadinessReporter.reportIfRequested(

@@ -25,13 +25,6 @@ struct TerminalSize: Equatable, Sendable {
     }
 }
 
-enum OutputDisplayMode: String, Equatable, Sendable {
-    case terminal
-    case text
-
-    static let `default`: Self = .terminal
-}
-
 enum TerminalRendererState: Equatable, Sendable {
     case awaitingWindow
     case metal

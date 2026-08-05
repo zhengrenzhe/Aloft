@@ -1,8 +1,171 @@
 import AppKit
+import Observation
 import XCTest
 @testable import AloftApp
 
 final class MenuBarProjectionTests: XCTestCase {
+    @MainActor
+    func testStatusLabelTracksUnacknowledgedAttentionCount() throws {
+        let runtime = RuntimeStore(supervisor: ProcessSupervisor())
+        let entry = terminationEntry(
+            id: UUID(),
+            name: "Failed"
+        )
+        let label = MenuBarStatusLabel(
+            choice: .bolt,
+            runtime: runtime
+        )
+        let invalidated = expectation(
+            description: "menu bar attention count invalidated"
+        )
+        withObservationTracking {
+            _ = label.attentionCount
+        } onChange: {
+            invalidated.fulfill()
+        }
+
+        runtime.recordOperationFailure(
+            operation: .stop,
+            entries: [entry],
+            results: [
+                EntryActionResult(
+                    entryID: entry.id,
+                    errorDescription: "Timed out"
+                ),
+            ]
+        )
+
+        wait(for: [invalidated], timeout: 0.1)
+        XCTAssertEqual(label.attentionCount, 1)
+        let attentionID = try XCTUnwrap(
+            runtime.unacknowledgedAttentionItems.first?.id
+        )
+
+        runtime.acknowledgeAttention(id: attentionID)
+
+        XCTAssertEqual(label.attentionCount, 0)
+    }
+
+    func testProjectionShowsConfiguredAndAggregateAttentionNewestFirst() {
+        let entryID = UUID(
+            uuidString: "00000000-0000-0000-0000-000000000011"
+        )!
+        let unknownID = UUID(
+            uuidString: "00000000-0000-0000-0000-000000000099"
+        )!
+        let group = fixtureGroup(
+            id: UUID(
+                uuidString: "00000000-0000-0000-0000-000000000001"
+            )!,
+            name: "Commands",
+            order: 0,
+            entries: [
+                fixtureEntry(
+                    id: entryID,
+                    name: "Configured",
+                    order: 0
+                ),
+            ]
+        )
+        let configured = RuntimeAttentionItem(
+            id: UUID(),
+            entryID: entryID,
+            kind: .unexpectedTermination,
+            title: String(repeating: "Configured ", count: 5),
+            detail: "Exited with status 17.",
+            createdAt: Date(timeIntervalSince1970: 100),
+            isAcknowledged: false
+        )
+        let aggregate = RuntimeAttentionItem(
+            id: UUID(),
+            entryID: nil,
+            kind: .operationFailure,
+            title: "Stop Failed",
+            detail: "One: timeout\nTwo: timeout",
+            createdAt: Date(timeIntervalSince1970: 200),
+            isAcknowledged: false
+        )
+        let unknown = RuntimeAttentionItem(
+            id: UUID(),
+            entryID: unknownID,
+            kind: .unexpectedTermination,
+            title: "Unknown",
+            detail: "Unknown",
+            createdAt: Date(timeIntervalSince1970: 300),
+            isAcknowledged: false
+        )
+        let acknowledged = RuntimeAttentionItem(
+            id: UUID(),
+            entryID: entryID,
+            kind: .unexpectedTermination,
+            title: "Acknowledged",
+            detail: "Acknowledged",
+            createdAt: Date(timeIntervalSince1970: 400),
+            isAcknowledged: true
+        )
+
+        let projection = MenuBarProjection(
+            groups: [group],
+            liveEntryIDs: [],
+            latestMatch: nil,
+            attentionItems: [
+                configured,
+                aggregate,
+                unknown,
+                acknowledged,
+            ]
+        )
+
+        XCTAssertEqual(
+            projection.attentionItems.map(\.id),
+            [aggregate.id, configured.id]
+        )
+        XCTAssertEqual(projection.attentionItems[0].entryID, nil)
+        XCTAssertEqual(
+            projection.attentionItems[1].title.count,
+            MenuBarProjection.maximumTitleLength
+        )
+    }
+
+    @MainActor
+    func testStatusLabelTracksLiveCountInsteadOfCapturingSnapshot() {
+        let runtime = RuntimeStore(supervisor: ProcessSupervisor())
+        let entryID = UUID()
+        let entryRuntime = runtime.runtime(for: entryID)
+        entryRuntime.process = ProcessSnapshot(
+            entryID: entryID,
+            pid: 801,
+            processGroupID: 801,
+            liveness: .running,
+            launchedAt: .distantPast,
+            exitResult: nil
+        )
+        let label = MenuBarStatusLabel(
+            choice: .bolt,
+            runtime: runtime
+        )
+        let invalidated = expectation(
+            description: "menu bar running count invalidated"
+        )
+        withObservationTracking {
+            _ = label.liveCount
+        } onChange: {
+            invalidated.fulfill()
+        }
+
+        entryRuntime.process = ProcessSnapshot(
+            entryID: entryID,
+            pid: nil,
+            processGroupID: nil,
+            liveness: .stopped,
+            launchedAt: .distantPast,
+            exitResult: .exited(code: 0)
+        )
+
+        wait(for: [invalidated], timeout: 0.1)
+        XCTAssertEqual(label.liveCount, 0)
+    }
+
     func testProjectionShowsOnlyLiveEntriesAndTruncatesMatchToThirtyCharacters() {
         let liveEntryID = UUID(
             uuidString: "00000000-0000-0000-0000-000000000011"

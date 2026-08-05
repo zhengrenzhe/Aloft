@@ -11,6 +11,7 @@ final class AppModel {
     var selectedGroupID: UUID?
     var selectedEntryID: UUID?
     var presentedError: String?
+    var pendingManagementRoute: ManagementRouteRequest?
 
     var orderedGroups: [CommandGroup] {
         workspace.configuration.groups
@@ -93,6 +94,17 @@ final class AppModel {
             return
         }
         repairSelection()
+    }
+
+    func requestManagementRoute(entryID: UUID) {
+        pendingManagementRoute = ManagementRouteRequest(
+            entryID: entryID
+        )
+    }
+
+    func consumePendingManagementRoute() -> ManagementRouteRequest? {
+        defer { pendingManagementRoute = nil }
+        return pendingManagementRoute
     }
 
     @discardableResult
@@ -339,10 +351,16 @@ final class AppModel {
         )
         let runtime = runtime
         return Task { @MainActor in
-            await runtime.stop(
+            let result = await runtime.stop(
                 entry,
                 reservation: reservation
             )
+            runtime.recordOperationFailure(
+                operation: .stop,
+                entries: [entry],
+                results: [result]
+            )
+            return result
         }
     }
 
@@ -358,10 +376,16 @@ final class AppModel {
         )
         let runtime = runtime
         return Task { @MainActor in
-            await runtime.restart(
+            let result = await runtime.restart(
                 entry,
                 reservation: reservation
             )
+            runtime.recordOperationFailure(
+                operation: .restart,
+                entries: [entry],
+                results: [result]
+            )
+            return result
         }
     }
 
@@ -402,10 +426,16 @@ final class AppModel {
         )
         let runtime = runtime
         return Task { @MainActor in
-            await runtime.stopAll(
+            let results = await runtime.stopAll(
                 entries,
                 reservation: reservation
             )
+            runtime.recordOperationFailure(
+                operation: .stop,
+                entries: entries,
+                results: results
+            )
+            return results
         }
     }
 
@@ -422,10 +452,16 @@ final class AppModel {
         )
         let runtime = runtime
         return Task { @MainActor in
-            await runtime.restartAll(
+            let results = await runtime.restartAll(
                 entries,
                 reservation: reservation
             )
+            runtime.recordOperationFailure(
+                operation: .restart,
+                entries: entries,
+                results: results
+            )
+            return results
         }
     }
 

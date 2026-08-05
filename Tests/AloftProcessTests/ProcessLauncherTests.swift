@@ -4,6 +4,42 @@ import XCTest
 @testable import AloftApp
 
 final class ProcessLauncherTests: XCTestCase {
+    func testLaunchProvidesA256ColorTerminalEnvironment() throws {
+        let process = try ProcessLauncher.launch(
+            command: """
+                printf 'TERM=%s\\nCOLORTERM=%s\\n' \
+                    "$TERM" "$COLORTERM"
+                """,
+            cwd: "/tmp",
+            shell: "/bin/zsh"
+        )
+        defer {
+            try? ProcessLauncher.signalProcessGroup(
+                process.processGroupID,
+                signal: SIGKILL
+            )
+            close(process.masterFileDescriptor)
+            _ = try? ProcessLauncher.wait(
+                pid: process.pid,
+                noHang: false
+            )
+        }
+
+        let output = try readUntilEOFOrTimeout(
+            fd: process.masterFileDescriptor,
+            timeout: 2
+        )
+
+        XCTAssertTrue(
+            output.contains("TERM=xterm-256color"),
+            "managed terminal environment was \(output)"
+        )
+        XCTAssertTrue(
+            output.contains("COLORTERM=truecolor"),
+            "managed terminal environment was \(output)"
+        )
+    }
+
     func testLaunchImportsInteractiveLoginShellEnvironmentWithoutManagedJobControl() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

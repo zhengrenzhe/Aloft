@@ -39,10 +39,6 @@ final class TerminalTypesTests: XCTestCase {
         )
     }
 
-    func testDisplayModeDefaultsToTerminal() {
-        XCTAssertEqual(OutputDisplayMode.default, .terminal)
-    }
-
     @MainActor
     func testSwiftTermProductIsLinked() {
         let view = TerminalView(

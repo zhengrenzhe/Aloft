@@ -10,6 +10,7 @@ final class TerminalSurfaceStub: TerminalSurface, @unchecked Sendable {
     @MainActor var rendererState: TerminalRendererState
     @MainActor var onRendererStateChange:
         ((TerminalRendererState) -> Void)?
+    @MainActor private(set) var updatedFonts: [NSFont] = []
 
     @MainActor
     init(
@@ -26,6 +27,11 @@ final class TerminalSurfaceStub: TerminalSurface, @unchecked Sendable {
     func discard(generation: UUID) {}
     func resize(_ size: TerminalSize, generation: UUID) {}
     func clear() {}
+
+    @MainActor
+    func updateFont(_ font: NSFont) {
+        updatedFonts.append(font)
+    }
 
     func dispose() {
         lock.withLock {

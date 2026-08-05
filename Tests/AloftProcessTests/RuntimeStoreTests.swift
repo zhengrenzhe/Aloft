@@ -5,6 +5,400 @@ import XCTest
 
 @MainActor
 final class RuntimeStoreTests: XCTestCase {
+    func testClearOutputRetainsLastTermination() {
+        let runtime = RuntimeStore(
+            supervisor: ProcessSupervisor()
+        )
+        let entryID = UUID()
+        let record = ProcessTerminationRecord(
+            endedAt: Date(timeIntervalSince1970: 123),
+            result: .exited(code: 17),
+            kind: .unexpected,
+            detail: "Exited with status 17."
+        )
+        runtime.runtime(for: entryID).lastTermination = record
+
+        runtime.clearOutput(entryID: entryID)
+
+        XCTAssertEqual(
+            runtime.runtime(for: entryID).lastTermination,
+            record
+        )
+    }
+
+    func testNewStartRetainsPreviousTerminationUntilCurrentGenerationEnds()
+        async {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(outputBeforeReturn: Data()),
+            ]
+        )
+        let record = ProcessTerminationRecord(
+            endedAt: Date(timeIntervalSince1970: 123),
+            result: .exited(code: 17),
+            kind: .unexpected,
+            detail: "Exited with status 17."
+        )
+        fixture.runtime.runtime(for: fixture.entry.id)
+            .lastTermination = record
+
+        let result = await fixture.runtime.start(fixture.entry)
+
+        XCTAssertTrue(result.isSuccess)
+        XCTAssertEqual(
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .lastTermination,
+            record
+        )
+    }
+
+    func testMonitoredNormalExitRecordsWithoutAttention() async {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(outputBeforeReturn: Data()),
+            ]
+        )
+        var delivered: [RuntimeAttentionItem] = []
+        fixture.runtime.onAttention = { delivered.append($0) }
+        let start = await fixture.runtime.start(fixture.entry)
+        XCTAssertTrue(start.isSuccess)
+        await fixture.process.setRefreshSnapshot(
+            stoppedSnapshot(
+                entryID: fixture.entry.id,
+                exitResult: .exited(code: 0)
+            )
+        )
+
+        await fixture.runtime.refreshAll()
+
+        XCTAssertEqual(
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .lastTermination?.kind,
+            .normal
+        )
+        XCTAssertEqual(
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .lastTermination?.result,
+            .exited(code: 0)
+        )
+        XCTAssertTrue(
+            fixture.runtime.unacknowledgedAttentionItems.isEmpty
+        )
+        XCTAssertTrue(delivered.isEmpty)
+    }
+
+    func testMonitoredNonzeroExitRecordsAndPublishesOneAttention()
+        async {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(outputBeforeReturn: Data()),
+            ]
+        )
+        var delivered: [RuntimeAttentionItem] = []
+        fixture.runtime.onAttention = { delivered.append($0) }
+        let start = await fixture.runtime.start(fixture.entry)
+        XCTAssertTrue(start.isSuccess)
+        await fixture.process.setRefreshSnapshot(
+            stoppedSnapshot(
+                entryID: fixture.entry.id,
+                exitResult: .exited(code: 17)
+            )
+        )
+
+        await fixture.runtime.refreshAll()
+
+        let entryRuntime = fixture.runtime.runtime(
+            for: fixture.entry.id
+        )
+        XCTAssertEqual(entryRuntime.lastTermination?.kind, .unexpected)
+        XCTAssertEqual(
+            entryRuntime.lastTermination?.result,
+            .exited(code: 17)
+        )
+        XCTAssertEqual(
+            fixture.runtime.unacknowledgedAttentionItems.count,
+            1
+        )
+        XCTAssertEqual(delivered.count, 1)
+        XCTAssertEqual(delivered.first?.entryID, fixture.entry.id)
+    }
+
+    func testMonitoredSignalExitIncludesSignalAndPublishesAttention()
+        async {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(outputBeforeReturn: Data()),
+            ]
+        )
+        var delivered: [RuntimeAttentionItem] = []
+        fixture.runtime.onAttention = { delivered.append($0) }
+        let start = await fixture.runtime.start(fixture.entry)
+        XCTAssertTrue(start.isSuccess)
+        await fixture.process.setRefreshSnapshot(
+            stoppedSnapshot(
+                entryID: fixture.entry.id,
+                exitResult: .signaled(signal: SIGABRT)
+            )
+        )
+
+        await fixture.runtime.refreshAll()
+
+        let termination = fixture.runtime.runtime(
+            for: fixture.entry.id
+        ).lastTermination
+        XCTAssertEqual(termination?.kind, .unexpected)
+        XCTAssertEqual(
+            termination?.result,
+            .signaled(signal: SIGABRT)
+        )
+        XCTAssertTrue(
+            termination?.detail.contains(String(SIGABRT)) == true
+        )
+        XCTAssertEqual(delivered.count, 1)
+    }
+
+    func testMonitoredExitWithoutWaitStatusPublishesUnavailableAttention()
+        async {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(outputBeforeReturn: Data()),
+            ]
+        )
+        var delivered: [RuntimeAttentionItem] = []
+        fixture.runtime.onAttention = { delivered.append($0) }
+        let start = await fixture.runtime.start(fixture.entry)
+        XCTAssertTrue(start.isSuccess)
+        await fixture.process.setRefreshSnapshot(
+            stoppedSnapshot(
+                entryID: fixture.entry.id,
+                exitResult: nil
+            )
+        )
+
+        await fixture.runtime.refreshAll()
+
+        XCTAssertEqual(
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .lastTermination?.kind,
+            .unavailable
+        )
+        XCTAssertEqual(delivered.count, 1)
+    }
+
+    func testSuccessfulStopRecordsIntentionalTerminationWithoutAttention()
+        async {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(outputBeforeReturn: Data()),
+            ]
+        )
+        var delivered: [RuntimeAttentionItem] = []
+        fixture.runtime.onAttention = { delivered.append($0) }
+        let start = await fixture.runtime.start(fixture.entry)
+        XCTAssertTrue(start.isSuccess)
+        await fixture.process.setStopResult(.stopped)
+        await fixture.process.setRefreshSnapshot(
+            stoppedSnapshot(
+                entryID: fixture.entry.id,
+                exitResult: .signaled(signal: SIGTERM)
+            )
+        )
+
+        let stop = await fixture.runtime.stop(fixture.entry)
+
+        XCTAssertTrue(stop.isSuccess)
+        XCTAssertEqual(
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .lastTermination?.kind,
+            .intentional
+        )
+        XCTAssertEqual(
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .lastTermination?.result,
+            .signaled(signal: SIGTERM)
+        )
+        XCTAssertTrue(
+            fixture.runtime.unacknowledgedAttentionItems.isEmpty
+        )
+        XCTAssertTrue(delivered.isEmpty)
+    }
+
+    func testStopManagedRecordsDoesNotPublishUnexpectedTermination()
+        async {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(outputBeforeReturn: Data()),
+            ]
+        )
+        var delivered: [RuntimeAttentionItem] = []
+        fixture.runtime.onAttention = { delivered.append($0) }
+        let start = await fixture.runtime.start(fixture.entry)
+        XCTAssertTrue(start.isSuccess)
+        await fixture.process.setStopResult(.stopped)
+        await fixture.process.setRefreshSnapshot(
+            stoppedSnapshot(
+                entryID: fixture.entry.id,
+                exitResult: .signaled(signal: SIGTERM)
+            )
+        )
+
+        let results = await fixture.runtime.stopManagedRecords(
+            entryIDs: [fixture.entry.id],
+            timeout: .seconds(1)
+        )
+
+        XCTAssertEqual(results.map(\.isSuccess), [true])
+        XCTAssertEqual(
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .lastTermination?.kind,
+            .intentional
+        )
+        XCTAssertTrue(delivered.isEmpty)
+    }
+
+    func testAttentionQueueKeepsNewestFiftyItems() {
+        let runtime = RuntimeStore(
+            supervisor: ProcessSupervisor()
+        )
+
+        for index in 0 ..< 51 {
+            let entry = CommandEntry(
+                id: UUID(),
+                name: "Entry \(index)",
+                cwd: "/tmp",
+                command: "unused",
+                keywords: [],
+                order: index
+            )
+            runtime.recordOperationFailure(
+                operation: .stop,
+                entries: [entry],
+                results: [
+                    EntryActionResult(
+                        entryID: entry.id,
+                        errorDescription: "Failure \(index)"
+                    ),
+                ]
+            )
+        }
+
+        XCTAssertEqual(runtime.attentionItems.count, 50)
+        XCTAssertTrue(
+            runtime.attentionItems.first?.detail
+                .contains("Failure 50") == true
+        )
+        XCTAssertFalse(
+            runtime.attentionItems.contains {
+                $0.detail.contains("Failure 0")
+            }
+        )
+    }
+
+    func testAcknowledgingAttentionUpdatesActiveCountWithoutDeletingHistory()
+        throws {
+        let runtime = RuntimeStore(
+            supervisor: ProcessSupervisor()
+        )
+        let entries = [0, 1].map { index in
+            CommandEntry(
+                id: UUID(),
+                name: "Entry \(index)",
+                cwd: "/tmp",
+                command: "unused",
+                keywords: [],
+                order: index
+            )
+        }
+        for entry in entries {
+            runtime.recordOperationFailure(
+                operation: .stop,
+                entries: [entry],
+                results: [
+                    EntryActionResult(
+                        entryID: entry.id,
+                        errorDescription: "Failure"
+                    ),
+                ]
+            )
+        }
+        let newestID = try XCTUnwrap(runtime.attentionItems.first?.id)
+
+        runtime.acknowledgeAttention(id: newestID)
+
+        XCTAssertEqual(runtime.attentionItems.count, 2)
+        XCTAssertEqual(runtime.unacknowledgedAttentionItems.count, 1)
+
+        runtime.acknowledgeAllAttention()
+
+        XCTAssertEqual(runtime.attentionItems.count, 2)
+        XCTAssertTrue(runtime.unacknowledgedAttentionItems.isEmpty)
+    }
+
+    func testRemovingEntryRemovesItsAttentionItems() throws {
+        let runtime = RuntimeStore(
+            supervisor: ProcessSupervisor()
+        )
+        let entry = CommandEntry(
+            id: UUID(),
+            name: "Removed",
+            cwd: "/tmp",
+            command: "unused",
+            keywords: [],
+            order: 0
+        )
+        runtime.recordOperationFailure(
+            operation: .stop,
+            entries: [entry],
+            results: [
+                EntryActionResult(
+                    entryID: entry.id,
+                    errorDescription: "Failure"
+                ),
+            ]
+        )
+
+        try runtime.removeEntry(entryID: entry.id)
+
+        XCTAssertFalse(
+            runtime.attentionItems.contains {
+                $0.entryID == entry.id
+            }
+        )
+    }
+
+    func testRemovingEntryRemovesAggregateAttentionRelatedToIt()
+        throws {
+        let runtime = RuntimeStore(
+            supervisor: ProcessSupervisor()
+        )
+        let entries = ["One", "Two"].enumerated().map {
+            index, name in
+            CommandEntry(
+                id: UUID(),
+                name: name,
+                cwd: "/tmp",
+                command: "unused",
+                keywords: [],
+                order: index
+            )
+        }
+        runtime.recordOperationFailure(
+            operation: .stop,
+            entries: entries,
+            results: entries.map {
+                EntryActionResult(
+                    entryID: $0.id,
+                    errorDescription: "Failure"
+                )
+            }
+        )
+        XCTAssertNil(runtime.attentionItems.first?.entryID)
+
+        try runtime.removeEntry(entryID: entries[0].id)
+
+        XCTAssertTrue(runtime.attentionItems.isEmpty)
+    }
+
     func testClearOutputClearsTextAndTerminalWithoutStoppingProcess()
         async {
         let fixture = await makeTerminalRuntimeFixture(
@@ -32,7 +426,101 @@ final class RuntimeStoreTests: XCTestCase {
         )
     }
 
-    func testUnavailableTerminalSelectsTextWithoutStoppingProcess()
+    func testSuccessfulStopClearsOutputAndRejectsLateTerminalBytes()
+        async throws {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(
+                    outputBeforeReturn: Data("visible".utf8)
+                ),
+            ]
+        )
+        let start = await fixture.runtime.start(fixture.entry)
+        XCTAssertTrue(start.isSuccess)
+        let generations = await fixture.process.startedGenerations
+        let generation = try XCTUnwrap(
+            generations.first
+        )
+        let outputArrived = await waitUntilMainActor(
+            timeout: .seconds(1)
+        ) {
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .output.displayText.contains("visible")
+        }
+        XCTAssertTrue(outputArrived)
+        XCTAssertEqual(fixture.surface.visibleText, "visible")
+
+        let stop = await fixture.runtime.stop(fixture.entry)
+
+        XCTAssertTrue(stop.isSuccess)
+        XCTAssertEqual(
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .output.displayText,
+            ""
+        )
+        XCTAssertEqual(fixture.surface.visibleText, "")
+
+        fixture.surface.feed(
+            Data("late".utf8),
+            generation: generation
+        )
+
+        XCTAssertEqual(fixture.surface.visibleText, "")
+        XCTAssertEqual(
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .output.displayText,
+            ""
+        )
+    }
+
+    func testTimedOutStopPreservesOutputAndAcceptsContinuedBytes()
+        async throws {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(
+                    outputBeforeReturn: Data("visible".utf8)
+                ),
+            ]
+        )
+        let start = await fixture.runtime.start(fixture.entry)
+        XCTAssertTrue(start.isSuccess)
+        let generations = await fixture.process.startedGenerations
+        let generation = try XCTUnwrap(generations.first)
+        let running = fixture.runtime.runtime(
+            for: fixture.entry.id
+        ).process
+        await fixture.process.setStopResult(
+            .timedOut(running)
+        )
+        let outputArrived = await waitUntilMainActor(
+            timeout: .seconds(1)
+        ) {
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .output.displayText.contains("visible")
+        }
+        XCTAssertTrue(outputArrived)
+
+        let stop = await fixture.runtime.stop(fixture.entry)
+
+        XCTAssertFalse(stop.isSuccess)
+        XCTAssertTrue(
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .output.displayText.contains("visible")
+        )
+        XCTAssertEqual(fixture.surface.visibleText, "visible")
+
+        fixture.surface.feed(
+            Data("continued".utf8),
+            generation: generation
+        )
+
+        XCTAssertEqual(
+            fixture.surface.visibleText,
+            "visiblecontinued"
+        )
+    }
+
+    func testUnavailableTerminalDoesNotStopProcess()
         async {
         let fixture = await makeTerminalRuntimeFixture(
             startPlans: [
@@ -47,14 +535,15 @@ final class RuntimeStoreTests: XCTestCase {
         fixture.surface.publishRendererState(
             .unavailable("renderer unavailable")
         )
-        let selectedText = await waitUntilMainActor(
+        let rendererStateUpdated = await waitUntilMainActor(
             timeout: .seconds(1)
         ) {
             fixture.runtime.runtime(for: fixture.entry.id)
-                .outputDisplayMode == .text
+                .terminalRendererState
+                == .unavailable("renderer unavailable")
         }
 
-        XCTAssertTrue(selectedText)
+        XCTAssertTrue(rendererStateUpdated)
         XCTAssertEqual(
             fixture.runtime.runtime(for: fixture.entry.id)
                 .terminalRendererState,
@@ -438,6 +927,14 @@ final class RuntimeStoreTests: XCTestCase {
             Set(firstIdentities.map(\.pgid))
                 .isDisjoint(with: Set(secondIdentities.map(\.pgid)))
         )
+        for identity in secondIdentities {
+            let didExec = try await waitForExecutableName(
+                pid: identity.pid,
+                name: "sleep",
+                timeout: .seconds(2)
+            )
+            XCTAssertTrue(didExec)
+        }
         for identity in firstIdentities {
             XCTAssertFalse(
                 try ProcessLauncher.processGroupExists(identity.pgid)
@@ -453,7 +950,7 @@ final class RuntimeStoreTests: XCTestCase {
         let runtime = RuntimeStore(supervisor: ProcessSupervisor())
         let entry = fixtureEntry(
             name: "Short",
-            command: "exec sleep 0.1"
+            command: "echo NATURAL_EXIT_OUTPUT; exec sleep 0.2"
         )
         let result = await runtime.start(entry)
         let started = runtime.runtime(for: entry.id).process
@@ -463,6 +960,15 @@ final class RuntimeStoreTests: XCTestCase {
 
         XCTAssertTrue(result.isSuccess)
         XCTAssertEqual(started.liveness, .running)
+        let observedOutput = await waitUntilMainActor(
+            timeout: .seconds(1)
+        ) {
+            runtime.runtime(for: entry.id)
+                .output.displayText.contains(
+                    "NATURAL_EXIT_OUTPUT"
+                )
+        }
+        XCTAssertTrue(observedOutput)
         let observedNaturalExit = await waitUntilMainActor(
             timeout: .seconds(2)
         ) {
@@ -475,6 +981,10 @@ final class RuntimeStoreTests: XCTestCase {
         XCTAssertNil(refreshed.pid)
         XCTAssertNil(refreshed.processGroupID)
         XCTAssertTrue(runtime.liveEntryIDs.isEmpty)
+        XCTAssertEqual(
+            runtime.runtime(for: entry.id).output.displayText,
+            ""
+        )
     }
 
     func testTerminationReturnsEverySIGTERMResistantEntryAndPGID() async throws {
@@ -575,6 +1085,20 @@ final class RuntimeStoreTests: XCTestCase {
             )
         }
     }
+}
+
+private func stoppedSnapshot(
+    entryID: UUID,
+    exitResult: ChildWaitResult?
+) -> ProcessSnapshot {
+    ProcessSnapshot(
+        entryID: entryID,
+        pid: nil,
+        processGroupID: nil,
+        liveness: .stopped,
+        launchedAt: .distantPast,
+        exitResult: exitResult
+    )
 }
 
 private func fixtureEntry(

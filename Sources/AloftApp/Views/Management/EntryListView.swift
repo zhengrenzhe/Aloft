@@ -87,7 +87,41 @@ struct EntryListView: View {
                 ?? L10n.string("Commands")
         )
         .toolbar {
-            ToolbarItem {
+            ToolbarItemGroup {
+                if let group = model.selectedGroup {
+                    Button(
+                        L10n.string("Start All"),
+                        systemImage: "play.fill"
+                    ) {
+                        model.startGroup(id: group.id)
+                    }
+                    .help(L10n.string("Start All"))
+                    Button(
+                        L10n.string("Restart All"),
+                        systemImage: "arrow.clockwise"
+                    ) {
+                        model.restartGroup(id: group.id)
+                    }
+                    .disabled(
+                        !group.entries.contains {
+                            entryIsLive($0)
+                        }
+                    )
+                    .help(L10n.string("Restart All"))
+                    Button(
+                        L10n.string("Stop All"),
+                        systemImage: "stop.fill"
+                    ) {
+                        model.stopGroup(id: group.id)
+                    }
+                    .disabled(
+                        !group.entries.contains {
+                            entryIsLive($0)
+                        }
+                    )
+                    .help(L10n.string("Stop All"))
+                }
+
                 Button {
                     if let groupID = model.selectedGroupID {
                         editor = .add(
@@ -102,6 +136,7 @@ struct EntryListView: View {
                     )
                 }
                 .disabled(model.selectedGroupID == nil)
+                .help(L10n.string("Add Command"))
             }
         }
         .sheet(item: $editor) { presentation in
@@ -160,22 +195,37 @@ private struct EntryRow: View {
     let isLive: Bool
 
     var body: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(isLive ? .green : .secondary)
-                .frame(width: 7, height: 7)
+        HStack(spacing: 10) {
+            Image(
+                systemName: isLive
+                    ? "play.fill"
+                    : "terminal"
+            )
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(isLive ? .green : .secondary)
+                .frame(width: 28, height: 28)
+                .background(
+                    (isLive ? Color.green : Color.secondary)
+                        .opacity(0.1),
+                    in: RoundedRectangle(
+                        cornerRadius: 7,
+                        style: .continuous
+                    )
+                )
                 .accessibilityLabel(
                     L10n.string(isLive ? "Running" : "Stopped")
                 )
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(entry.name)
+                    .fontWeight(.medium)
                     .lineLimit(1)
                 Text(entry.command)
-                    .font(.caption)
+                    .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
         }
+        .padding(.vertical, 3)
     }
 }
 

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Observation
 
@@ -220,7 +221,15 @@ final class RuntimeStore {
 
     private(set) var runtimes: [UUID: EntryRuntime] = [:]
     private(set) var latestGlobalMatch: KeywordMatchEvent?
+    private(set) var attentionItems: [RuntimeAttentionItem] = []
     private(set) var protectionCounts: [UUID: Int] = [:]
+
+    @ObservationIgnored
+    var onAttention: ((RuntimeAttentionItem) -> Void)?
+
+    var unacknowledgedAttentionItems: [RuntimeAttentionItem] {
+        attentionItems.filter { !$0.isAcknowledged }
+    }
 
     @ObservationIgnored
     let supervisor: ProcessSupervisor
@@ -233,6 +242,9 @@ final class RuntimeStore {
 
     @ObservationIgnored
     private var outputSessions: [UUID: OutputSession] = [:]
+
+    @ObservationIgnored
+    private var outputIngresses: [UUID: MainActorDataBatcher] = [:]
 
     @ObservationIgnored
     private var runtimeGenerations: [UUID: UUID] = [:]
@@ -459,7 +471,8 @@ final class RuntimeStore {
         let stopped = await stopLocked(
             entryID: entry.id,
             timeout: timeout,
-            operationID: operationID
+            operationID: operationID,
+            clearOutputOnSuccess: false
         )
         let result: EntryActionResult
         if stopped.isSuccess {
@@ -591,6 +604,7 @@ final class RuntimeStore {
         for entryRuntime in runtimes.values {
             guard entryRuntime.process.liveness == .running,
                   entryRuntime.process.processGroupID != nil,
+                  operationIDs[entryRuntime.entryID] == nil,
                   let generation = runtimeGenerations[
                     entryRuntime.entryID
                   ] else {
@@ -652,6 +666,17 @@ final class RuntimeStore {
             let entryRuntime = runtime(for: result.entryID)
             if let snapshot = result.snapshot {
                 entryRuntime.process = snapshot
+                if snapshot.liveness == .stopped,
+                   snapshot.processGroupID == nil {
+                    recordMonitoredTermination(
+                        snapshot,
+                        entryRuntime: entryRuntime
+                    )
+                    finishStoppedOutput(
+                        entryID: result.entryID,
+                        generation: result.generation
+                    )
+                }
             }
             if let errorDescription = result.errorDescription {
                 entryRuntime.lastError = errorDescription
@@ -710,6 +735,7 @@ final class RuntimeStore {
             session.entryID == entryID ? generation : nil
         }
         for generation in generations {
+            outputIngresses[generation]?.discardPending()
             guard var session = outputSessions[generation] else {
                 continue
             }
@@ -738,6 +764,69 @@ final class RuntimeStore {
         }
     }
 
+    func acknowledgeAttention(id: UUID) {
+        guard let index = attentionItems.firstIndex(
+            where: { $0.id == id }
+        ) else {
+            return
+        }
+        attentionItems[index].isAcknowledged = true
+    }
+
+    func acknowledgeAllAttention() {
+        for index in attentionItems.indices {
+            attentionItems[index].isAcknowledged = true
+        }
+    }
+
+    func recordOperationFailure(
+        operation: RuntimeOperationName,
+        entries: [CommandEntry],
+        results: [EntryActionResult]
+    ) {
+        let entriesByID = Dictionary(
+            uniqueKeysWithValues: entries.map { ($0.id, $0) }
+        )
+        let failures = results.compactMap {
+            result -> (entryID: UUID, name: String, error: String)? in
+            guard let error = result.errorDescription else {
+                return nil
+            }
+            return (
+                result.entryID,
+                entriesByID[result.entryID]?.name
+                    ?? result.entryID.uuidString,
+                error
+            )
+        }
+        guard !failures.isEmpty else {
+            return
+        }
+        let title: String
+        switch operation {
+        case .stop:
+            title = L10n.string("Stop Failed")
+        case .restart:
+            title = L10n.string("Restart Failed")
+        }
+        appendAttention(
+            RuntimeAttentionItem(
+                id: UUID(),
+                entryID: failures.count == 1
+                    ? failures[0].entryID
+                    : nil,
+                kind: .operationFailure,
+                title: title,
+                detail: failures.map {
+                    "\($0.name): \($0.error)"
+                }.joined(separator: "\n"),
+                createdAt: Date(),
+                relatedEntryIDs: Set(failures.map(\.entryID)),
+                isAcknowledged: false
+            )
+        )
+    }
+
     func removeEntry(entryID: UUID) throws {
         guard !deletionProtectedEntryIDs.contains(entryID) else {
             throw RuntimeStoreError.entryRemovalProtected(entryID)
@@ -750,6 +839,9 @@ final class RuntimeStore {
         operationIDs.removeValue(forKey: entryID)
         entryLanes.removeValue(forKey: entryID)
         knownEntries.removeValue(forKey: entryID)
+        attentionItems.removeAll {
+            $0.relatedEntryIDs.contains(entryID)
+        }
 
         if let entryRuntime = runtimes.removeValue(
             forKey: entryID
@@ -874,7 +966,8 @@ final class RuntimeStore {
         let result = await stopLocked(
             entryID: entryID,
             timeout: timeout,
-            operationID: operationID
+            operationID: operationID,
+            clearOutputOnSuccess: true
         )
         finishOperation(
             entryID: entryID,
@@ -904,7 +997,7 @@ final class RuntimeStore {
         let priorGeneration = runtimeGenerations[entry.id]
         let nextGeneration = UUID()
         let sessionStartedAt = Date()
-        installPendingOutputSession(
+        let outputIngress = installPendingOutputSession(
             for: entry,
             generation: nextGeneration,
             retaining: entryRuntime.output,
@@ -920,19 +1013,12 @@ final class RuntimeStore {
             let snapshot = try await processClient.start(
                 entry: entry,
                 generation: nextGeneration
-            ) {
-                [weak self] data in
+            ) { data in
                 terminalSurface?.feed(
                     data,
                     generation: nextGeneration
                 )
-                Task { @MainActor [weak self] in
-                    self?.consume(
-                        data,
-                        entryID: entry.id,
-                        generation: nextGeneration
-                    )
-                }
+                outputIngress.submit(data)
             }
             guard operationIsCurrent(
                 entryID: entry.id,
@@ -987,7 +1073,8 @@ final class RuntimeStore {
     private func stopLocked(
         entryID: UUID,
         timeout: Duration,
-        operationID: UUID
+        operationID: UUID,
+        clearOutputOnSuccess: Bool
     ) async -> EntryActionResult {
         let entryRuntime = runtime(for: entryID)
         guard entryRuntime.process.processGroupID != nil else {
@@ -999,6 +1086,12 @@ final class RuntimeStore {
             }
             _ = advanceProjectionRevision(entryID: entryID)
             entryRuntime.lastError = nil
+            if clearOutputOnSuccess {
+                finishStoppedOutput(
+                    entryID: entryID,
+                    generation: runtimeGenerations[entryID]
+                )
+            }
             stopMonitoringIfIdle()
             return EntryActionResult(
                 entryID: entryID,
@@ -1042,6 +1135,19 @@ final class RuntimeStore {
                     )
                 }
                 entryRuntime.process = snapshot
+                if snapshot.liveness == .stopped,
+                   snapshot.processGroupID == nil {
+                    entryRuntime.lastTermination = terminationRecord(
+                        result: snapshot.exitResult,
+                        intentional: true
+                    )
+                    if clearOutputOnSuccess {
+                        finishStoppedOutput(
+                            entryID: entryID,
+                            generation: generation
+                        )
+                    }
+                }
                 stopMonitoringIfIdle()
                 return EntryActionResult(
                     entryID: entryID,
@@ -1067,6 +1173,140 @@ final class RuntimeStore {
             }
             return recordFailure(error, for: entryRuntime)
         }
+    }
+
+    private func finishStoppedOutput(
+        entryID: UUID,
+        generation: UUID?
+    ) {
+        let entryRuntime = runtime(for: entryID)
+        removeOutputSessions(entryID: entryID, except: nil)
+        if let generation {
+            entryRuntime.terminalSurface?.discard(
+                generation: generation
+            )
+            if runtimeGenerations[entryID] == generation {
+                runtimeGenerations.removeValue(forKey: entryID)
+            }
+        }
+        entryRuntime.output = OutputSnapshot(
+            committedLines: [],
+            currentLine: "",
+            latestMatch: nil
+        )
+        entryRuntime.terminalSurface?.clear()
+        if latestGlobalMatch?.entryID == entryID {
+            latestGlobalMatch = nil
+        }
+    }
+
+    private func recordMonitoredTermination(
+        _ snapshot: ProcessSnapshot,
+        entryRuntime: EntryRuntime
+    ) {
+        let record = terminationRecord(
+            result: snapshot.exitResult,
+            intentional: false
+        )
+        entryRuntime.lastTermination = record
+        guard record.kind == .unexpected
+                || record.kind == .unavailable else {
+            return
+        }
+        let name = knownEntries[snapshot.entryID]?.name
+            ?? snapshot.entryID.uuidString
+        appendAttention(
+            RuntimeAttentionItem(
+                id: UUID(),
+                entryID: snapshot.entryID,
+                kind: .unexpectedTermination,
+                title: L10n.format("Command Exited: %@", name),
+                detail: record.detail,
+                createdAt: record.endedAt,
+                isAcknowledged: false
+            )
+        )
+    }
+
+    private func terminationRecord(
+        result: ChildWaitResult?,
+        intentional: Bool
+    ) -> ProcessTerminationRecord {
+        if intentional {
+            return ProcessTerminationRecord(
+                endedAt: Date(),
+                result: result,
+                kind: .intentional,
+                detail: L10n.string("Stopped intentionally.")
+            )
+        }
+        switch result {
+        case .exited(let code) where code == 0:
+            return ProcessTerminationRecord(
+                endedAt: Date(),
+                result: result,
+                kind: .normal,
+                detail: L10n.format(
+                    "Exited normally with status %@.",
+                    String(code)
+                )
+            )
+        case .exited(let code):
+            return ProcessTerminationRecord(
+                endedAt: Date(),
+                result: result,
+                kind: .unexpected,
+                detail: L10n.format(
+                    "Exited with status %@.",
+                    String(code)
+                )
+            )
+        case .signaled(let signal):
+            let signalNumber = String(signal)
+            let detail: String
+            if let name = strsignal(signal) {
+                detail = L10n.format(
+                    "Terminated by signal %@ (%@).",
+                    signalNumber,
+                    String(cString: name)
+                )
+            } else {
+                detail = L10n.format(
+                    "Terminated by signal %@.",
+                    signalNumber
+                )
+            }
+            return ProcessTerminationRecord(
+                endedAt: Date(),
+                result: result,
+                kind: .unexpected,
+                detail: detail
+            )
+        case .running:
+            return ProcessTerminationRecord(
+                endedAt: Date(),
+                result: result,
+                kind: .unavailable,
+                detail: L10n.string("Exit status unavailable.")
+            )
+        case nil:
+            return ProcessTerminationRecord(
+                endedAt: Date(),
+                result: nil,
+                kind: .unavailable,
+                detail: L10n.string("Exit status unavailable.")
+            )
+        }
+    }
+
+    private func appendAttention(_ item: RuntimeAttentionItem) {
+        attentionItems.insert(item, at: 0)
+        if attentionItems.count > 50 {
+            attentionItems.removeLast(
+                attentionItems.count - 50
+            )
+        }
+        onAttention?(item)
     }
 
     private func performAll(
@@ -1122,7 +1362,7 @@ final class RuntimeStore {
         generation: UUID,
         retaining priorOutput: OutputSnapshot,
         at timestamp: Date
-    ) {
+    ) -> MainActorDataBatcher {
         var retainedLines = priorOutput.committedLines
         if !priorOutput.currentLine.isEmpty {
             retainedLines.append(priorOutput.currentLine)
@@ -1142,6 +1382,17 @@ final class RuntimeStore {
             latestUpdate: separator,
             latestGlobalMatch: separator.matches.last
         )
+        let outputIngress = MainActorDataBatcher(
+            maximumBatchByteCount: 64 * 1_024
+        ) { [weak self] data in
+            self?.consume(
+                data,
+                entryID: entry.id,
+                generation: generation
+            )
+        }
+        outputIngresses[generation] = outputIngress
+        return outputIngress
     }
 
     private func prepareTerminalSession(
@@ -1161,23 +1412,15 @@ final class RuntimeStore {
                 entryRuntime.terminalSurface = createdSurface
                 entryRuntime.terminalRendererState =
                     createdSurface.rendererState
-                if case .unavailable =
-                        createdSurface.rendererState {
-                    entryRuntime.outputDisplayMode = .text
-                }
                 createdSurface.onRendererStateChange = {
                     [weak entryRuntime] rendererState in
                     Task { @MainActor in
                         entryRuntime?.terminalRendererState =
                             rendererState
-                        if case .unavailable = rendererState {
-                            entryRuntime?.outputDisplayMode = .text
-                        }
                     }
                 }
                 terminalSurface = createdSurface
             } catch {
-                entryRuntime.outputDisplayMode = .text
                 entryRuntime.terminalRendererState = .unavailable(
                     error.localizedDescription
                 )
@@ -1273,6 +1516,7 @@ final class RuntimeStore {
         terminalSurface: (any TerminalSurface)?
     ) {
         outputSessions.removeValue(forKey: generation)
+        outputIngresses.removeValue(forKey: generation)?.close()
         terminalSurface?.discard(generation: generation)
         if runtimeGenerations[entryID] == generation {
             runtimeGenerations.removeValue(forKey: entryID)
@@ -1345,6 +1589,16 @@ final class RuntimeStore {
 
     private func adoptManagedSnapshot(_ snapshot: ProcessSnapshot) {
         let entryRuntime = runtime(for: snapshot.entryID)
+        if snapshot.liveness == .stopped,
+           snapshot.processGroupID == nil {
+            let generation = runtimeGenerations[snapshot.entryID]
+            entryRuntime.process = snapshot
+            finishStoppedOutput(
+                entryID: snapshot.entryID,
+                generation: generation
+            )
+            return
+        }
         if !sameProcessIdentity(entryRuntime.process, snapshot) {
             runtimeGenerations[snapshot.entryID] = UUID()
             removeOutputSessions(
@@ -1378,6 +1632,7 @@ final class RuntimeStore {
         }
         generations.forEach {
             outputSessions.removeValue(forKey: $0)
+            outputIngresses.removeValue(forKey: $0)?.close()
         }
     }
 
@@ -1393,6 +1648,7 @@ final class RuntimeStore {
     private func beginOperation(entryID: UUID) -> UUID {
         let id = UUID()
         operationIDs[entryID] = id
+        _ = advanceProjectionRevision(entryID: entryID)
         return id
     }
 

@@ -636,6 +636,119 @@ final class RuntimeStoreConcurrencyTests: XCTestCase {
         )
     }
 
+    func testRestartSurvivesMonitorProbeBetweenStopAndReplacementStart()
+        async throws {
+        let fake = ControlledProcessSupervisor()
+        let stopRefreshGate = AsyncTestGate()
+        let entry = concurrencyEntry(name: "Restart Monitor Race")
+        await fake.enqueueStartSnapshot(
+            runningSnapshot(
+                entryID: entry.id,
+                pid: 421,
+                processGroupID: 421
+            )
+        )
+        await fake.enqueueStartSnapshot(
+            runningSnapshot(
+                entryID: entry.id,
+                pid: 422,
+                processGroupID: 422
+            )
+        )
+        let stopped = stoppedSnapshot(entryID: entry.id)
+        await fake.setRefreshOverride(
+            stopped,
+            gate: stopRefreshGate,
+            call: 1
+        )
+        await fake.setRefreshOverride(
+            stopped,
+            gate: nil,
+            call: 2
+        )
+        let runtime = await makeRuntimeStore(fake)
+        let initialStart = await runtime.start(entry)
+        XCTAssertTrue(initialStart.isSuccess)
+
+        let restartTask = Task {
+            await runtime.restart(entry, timeout: .seconds(1))
+        }
+        let stopRefreshEntered = await waitUntilAsync {
+            await fake.refreshCallCount == 1
+        }
+        XCTAssertTrue(stopRefreshEntered)
+
+        await runtime.refreshAll()
+        let refreshCallCountDuringRestart = await fake.refreshCallCount
+
+        await stopRefreshGate.open()
+        let restart = await restartTask.value
+
+        XCTAssertEqual(refreshCallCountDuringRestart, 1)
+        XCTAssertTrue(restart.isSuccess)
+        XCTAssertEqual(runtime.runtime(for: entry.id).process.pid, 422)
+        XCTAssertTrue(runtime.attentionItems.isEmpty)
+    }
+
+    func testRestartInvalidatesMonitorProbeStartedBeforeOperation()
+        async throws {
+        let fake = ControlledProcessSupervisor()
+        let monitorRefreshGate = AsyncTestGate()
+        let stopGate = AsyncTestGate()
+        let entry = concurrencyEntry(name: "Restart Old Probe")
+        await fake.enqueueStartSnapshot(
+            runningSnapshot(
+                entryID: entry.id,
+                pid: 431,
+                processGroupID: 431
+            )
+        )
+        await fake.enqueueStartSnapshot(
+            runningSnapshot(
+                entryID: entry.id,
+                pid: 432,
+                processGroupID: 432
+            )
+        )
+        await fake.setRefreshOverride(
+            stoppedSnapshot(entryID: entry.id),
+            gate: monitorRefreshGate,
+            call: 1
+        )
+        await fake.setStopBehavior(
+            .stopped,
+            gate: stopGate,
+            call: 1
+        )
+        let runtime = await makeRuntimeStore(fake)
+        let initialStart = await runtime.start(entry)
+        XCTAssertTrue(initialStart.isSuccess)
+
+        let monitorTask = Task {
+            await runtime.refreshAll()
+        }
+        let monitorRefreshEntered = await waitUntilAsync {
+            await fake.refreshCallCount == 1
+        }
+        XCTAssertTrue(monitorRefreshEntered)
+        let restartTask = Task {
+            await runtime.restart(entry, timeout: .seconds(1))
+        }
+        let restartStopEntered = await waitUntilAsync {
+            await fake.stopCallCount == 1
+        }
+        XCTAssertTrue(restartStopEntered)
+
+        await monitorRefreshGate.open()
+        await monitorTask.value
+        await stopGate.open()
+        let restart = await restartTask.value
+
+        XCTAssertTrue(restart.isSuccess)
+        XCTAssertEqual(runtime.runtime(for: entry.id).process.pid, 432)
+        XCTAssertTrue(runtime.attentionItems.isEmpty)
+    }
+
     func testClearOutputDoesNotRestoreRetainedPriorSessionLines() async throws {
         let fake = ControlledProcessSupervisor()
         let entry = concurrencyEntry(name: "Clear")

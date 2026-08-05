@@ -6,6 +6,7 @@ protocol TerminalSurface: AnyObject, Sendable {
     @MainActor var rendererState: TerminalRendererState { get }
     @MainActor var onRendererStateChange:
         ((TerminalRendererState) -> Void)? { get set }
+    @MainActor func updateFont(_ font: NSFont)
 
     func prepare(generation: UUID)
     func feed(_ data: Data, generation: UUID)
@@ -14,6 +15,13 @@ protocol TerminalSurface: AnyObject, Sendable {
     func resize(_ size: TerminalSize, generation: UUID)
     func clear()
     func dispose()
+}
+
+extension TerminalSurface {
+    @MainActor
+    func updateFont(_ font: NSFont) {
+        _ = font
+    }
 }
 
 @MainActor

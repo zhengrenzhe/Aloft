@@ -125,6 +125,9 @@ final class TerminalSurfaceRecorder: TerminalSurface, @unchecked Sendable {
     func discard(generation: UUID) {
         withLock {
             pendingBytes.removeValue(forKey: generation)
+            if activeGeneration == generation {
+                activeGeneration = nil
+            }
             recordedEvents.append(.discard(generation))
         }
     }
@@ -197,6 +200,7 @@ actor ScriptedTerminalProcessClient {
     ] = []
     private var writeError: ProcessSupervisorError?
     private var resizeError: ProcessSupervisorError?
+    private var stopResultOverride: StopResult?
     private var callbackAttemptCount = 0
 
     private(set) var startedGenerations: [UUID] = []
@@ -263,6 +267,14 @@ actor ScriptedTerminalProcessClient {
         resizeError = resize
     }
 
+    func setStopResult(_ result: StopResult?) {
+        stopResultOverride = result
+    }
+
+    func setRefreshSnapshot(_ snapshot: ProcessSnapshot) {
+        records[snapshot.entryID] = snapshot
+    }
+
     private func start(
         entry: CommandEntry,
         generation: UUID,
@@ -301,6 +313,9 @@ actor ScriptedTerminalProcessClient {
     }
 
     private func stop(entryID: UUID) -> StopResult {
+        if let stopResultOverride {
+            return stopResultOverride
+        }
         guard let existing = records[entryID],
               existing.liveness == .running else {
             return .alreadyStopped

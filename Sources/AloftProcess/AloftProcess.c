@@ -138,6 +138,8 @@ aloft_launch_result aloft_launch(
             "-i",
             "+m",
             "-c",
+            "TERM=xterm-256color COLORTERM=truecolor; "
+            "export TERM COLORTERM; "
             "exec \"$0\" +m -c \"$1\"",
             shell,
             command,

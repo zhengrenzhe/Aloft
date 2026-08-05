@@ -1,7 +1,7 @@
 import AppKit
 import Dispatch
 import Foundation
-@preconcurrency import SwiftTerm
+import SwiftTerm
 
 final class SwiftTermSurface:
     NSObject,
@@ -35,6 +35,8 @@ final class SwiftTermSurface:
     private let stateQueueKey = DispatchSpecificKey<UInt8>()
     private let callbackAdmission: TerminalCallbackAdmission
     private let beforeOperation: @Sendable () -> Void
+    private let viewFeedBatcher: MainActorDataBatcher
+    private let viewportFollowRequest: TerminalViewportFollowRequest
     private let metalActivation: MetalActivation
 
     private var pendingGeneration: UUID?
@@ -53,14 +55,16 @@ final class SwiftTermSurface:
             try terminalView.setUseMetal(true)
             return terminalView.isUsingMetalRenderer
         },
-        beforeOperation: @escaping @Sendable () -> Void = {}
+        beforeOperation: @escaping @Sendable () -> Void = {},
+        beforeViewFeed:
+            @escaping @MainActor @Sendable () -> Void = {}
     ) {
         callbackAdmission = TerminalCallbackAdmission(
             callbacks: callbacks
         )
         self.metalActivation = metalActivation
         self.beforeOperation = beforeOperation
-        terminalViewForTesting = ReadOnlySwiftTermView(
+        let terminalView = ReadOnlySwiftTermView(
             frame: NSRect(
                 x: 0,
                 y: 0,
@@ -68,6 +72,22 @@ final class SwiftTermSurface:
                 height: 400
             )
         )
+        let viewportFollowRequest = TerminalViewportFollowRequest()
+        terminalViewForTesting = terminalView
+        self.viewportFollowRequest = viewportFollowRequest
+        viewFeedBatcher = MainActorDataBatcher(
+            maximumBatchByteCount: 16 * 1_024
+        ) { [weak terminalView] data in
+            guard let terminalView else {
+                return
+            }
+            beforeViewFeed()
+            let bytes = Array(data)
+            terminalView.feed(byteArray: bytes[...])
+            if viewportFollowRequest.consume() {
+                terminalView.scroll(toPosition: 1)
+            }
+        }
         super.init()
         stateQueue.setSpecific(key: stateQueueKey, value: 1)
         terminalViewForTesting.allowMouseReporting = false
@@ -96,7 +116,7 @@ final class SwiftTermSurface:
             guard activeGeneration == generation else {
                 return
             }
-            feedView(data)
+            submitViewFeed(data)
         }
     }
 
@@ -109,20 +129,23 @@ final class SwiftTermSurface:
             pendingGeneration = nil
             pendingChunks.removeAll(keepingCapacity: true)
             activeGeneration = generation
-            feedView(
+            viewportFollowRequest.request()
+            submitViewFeed(
                 terminalSessionPrelude(at: timestamp)
             )
-            chunks.forEach(feedView)
+            chunks.forEach(submitViewFeed)
         }
     }
 
     func discard(generation: UUID) {
         enqueueOperation { [self] in
-            guard pendingGeneration == generation else {
-                return
+            if pendingGeneration == generation {
+                pendingGeneration = nil
+                pendingChunks.removeAll(keepingCapacity: true)
             }
-            pendingGeneration = nil
-            pendingChunks.removeAll(keepingCapacity: true)
+            if activeGeneration == generation {
+                activeGeneration = nil
+            }
         }
     }
 
@@ -142,7 +165,7 @@ final class SwiftTermSurface:
     func clear() {
         enqueueOperation { [self] in
             pendingChunks.removeAll(keepingCapacity: true)
-            feedView(Data("\u{1b}c".utf8))
+            submitViewFeed(Data("\u{1b}c".utf8))
         }
     }
 
@@ -150,6 +173,7 @@ final class SwiftTermSurface:
         guard callbackAdmission.close() else {
             return
         }
+        viewFeedBatcher.close()
         stateQueue.async { [self] in
             beforeOperation()
             guard !disposed else {
@@ -167,6 +191,12 @@ final class SwiftTermSurface:
     }
 
     func waitUntilIdle() async {
+        await waitUntilStateQueueIsIdle()
+        await viewFeedBatcher.waitUntilIdle()
+        await waitUntilStateQueueIsIdle()
+    }
+
+    private func waitUntilStateQueueIsIdle() async {
         await withCheckedContinuation { continuation in
             stateQueue.async { [stateQueue] in
                 stateQueue.async {
@@ -181,6 +211,16 @@ final class SwiftTermSurface:
         activateRendererAfterWindowAttachment()
     }
 
+    @MainActor
+    func updateFont(_ font: NSFont) {
+        let currentFont = terminalViewForTesting.font
+        guard currentFont.fontName != font.fontName
+                || currentFont.pointSize != font.pointSize else {
+            return
+        }
+        terminalViewForTesting.font = font
+    }
+
     private func enqueueOperation(
         _ operation: @escaping @Sendable () -> Void
     ) {
@@ -193,11 +233,8 @@ final class SwiftTermSurface:
         }
     }
 
-    private func feedView(_ data: Data) {
-        let bytes = Array(data)
-        DispatchQueue.main.sync { [terminalViewForTesting] in
-            terminalViewForTesting.feed(byteArray: bytes[...])
-        }
+    private func submitViewFeed(_ data: Data) {
+        viewFeedBatcher.submit(data)
     }
 
     private func terminalSessionPrelude(at timestamp: Date) -> Data {
@@ -369,6 +406,26 @@ final class SwiftTermSurface:
         endY: Int
     ) {
         _ = (source, startY, endY)
+    }
+}
+
+private final class TerminalViewportFollowRequest:
+    @unchecked Sendable {
+    private let lock = NSLock()
+    private var requested = false
+
+    func request() {
+        lock.withLock {
+            requested = true
+        }
+    }
+
+    func consume() -> Bool {
+        lock.withLock {
+            let result = requested
+            requested = false
+            return result
+        }
     }
 }
 

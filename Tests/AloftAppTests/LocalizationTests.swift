@@ -103,16 +103,37 @@ final class LocalizationTests: XCTestCase {
 
     func testEnglishContainsTerminalV2Keys() throws {
         let v2Keys: Set<String> = [
-            "Output View",
             "Terminal",
-            "Text",
             "Metal rendering is unavailable. Using compatible rendering.",
-            "Terminal rendering is unavailable. Showing text output.",
+            "Terminal rendering is unavailable.",
         ]
 
         XCTAssertTrue(
             Set(try localization("en").keys)
                 .isSuperset(of: v2Keys)
+        )
+    }
+
+    func testEnglishContainsTerminationAlertKeys() throws {
+        let keys: Set<String> = [
+            "Clear All",
+            "Command Exited: %@",
+            "Exit status unavailable.",
+            "Exited normally with status %@.",
+            "Exited with status %@.",
+            "Last Termination",
+            "Needs Attention",
+            "Restart Failed",
+            "Running: %lld · Needs attention: %lld",
+            "Stop Failed",
+            "Stopped intentionally.",
+            "Terminated by signal %@ (%@).",
+            "Terminated by signal %@.",
+        ]
+
+        XCTAssertTrue(
+            Set(try localization("en").keys)
+                .isSuperset(of: keys)
         )
     }
 

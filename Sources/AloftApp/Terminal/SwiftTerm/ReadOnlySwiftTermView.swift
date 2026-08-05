@@ -1,4 +1,5 @@
 import AppKit
+import MetalKit
 import SwiftTerm
 
 final class ReadOnlySwiftTermView: TerminalView {
@@ -51,17 +52,54 @@ final class ReadOnlySwiftTermView: TerminalView {
         onWindowAttachment?()
     }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let target = super.hitTest(point)
+        if target is MTKView {
+            return self
+        }
+        return target
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        super.mouseDown(with: event)
+    }
+
     func filterUserInputEvent(_ event: NSEvent) -> NSEvent? {
         guard event.window === window,
               window?.firstResponder === self else {
             return event
         }
         switch event.type {
-        case .keyDown, .keyUp, .flagsChanged:
+        case .keyDown:
+            if isCopyShortcut(event) {
+                copySelectionIfAvailable()
+            }
+            return nil
+        case .keyUp, .flagsChanged:
             return nil
         default:
             return event
         }
+    }
+
+    private func isCopyShortcut(_ event: NSEvent) -> Bool {
+        let relevantModifiers = event.modifierFlags
+            .intersection([.command, .control, .option, .shift])
+        return relevantModifiers == .command
+            && event.charactersIgnoringModifiers?.lowercased() == "c"
+    }
+
+    private func copySelectionIfAvailable() {
+        let copyItem = NSMenuItem(
+            title: "",
+            action: #selector(copy(_:)),
+            keyEquivalent: ""
+        )
+        guard validateUserInterfaceItem(copyItem) else {
+            return
+        }
+        copy(self)
     }
 
     private func configureReadOnlyBehavior() {

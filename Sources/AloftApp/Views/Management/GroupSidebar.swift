@@ -10,6 +10,8 @@ struct GroupSidebar: View {
             ForEach(model.orderedGroups) { group in
                 GroupRow(
                     group: group,
+                    isSelected:
+                        model.selectedGroupID == group.id,
                     liveCount: group.entries.filter {
                         model.runtime.liveEntryIDs.contains($0.id)
                     }.count
@@ -64,6 +66,7 @@ struct GroupSidebar: View {
                         systemImage: "plus"
                     )
                 }
+                .help(L10n.string("Add Group"))
             }
         }
         .sheet(item: $editor) { presentation in
@@ -95,22 +98,51 @@ struct GroupSidebar: View {
 
 private struct GroupRow: View {
     let group: CommandGroup
+    let isSelected: Bool
     let liveCount: Int
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "folder")
-                .foregroundStyle(.secondary)
+            Image(
+                systemName: liveCount > 0
+                    ? "folder.fill"
+                    : "folder"
+            )
+                .foregroundStyle(
+                    liveCount > 0
+                        ? AnyShapeStyle(.tint)
+                        : AnyShapeStyle(.secondary)
+                )
             Text(group.name)
+                .fontWeight(.medium)
                 .lineLimit(1)
             Spacer(minLength: 4)
             if liveCount > 0 {
                 Text("\(liveCount)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                Circle()
-                    .fill(.green)
-                    .frame(width: 7, height: 7)
+                    .font(.caption2.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(
+                        isSelected
+                            ? AnyShapeStyle(
+                                Color(
+                                    nsColor:
+                                        .selectedControlTextColor
+                                )
+                            )
+                            : AnyShapeStyle(.green)
+                    )
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        (
+                            isSelected
+                                ? Color(
+                                    nsColor:
+                                        .selectedControlTextColor
+                                )
+                                : .green
+                        ).opacity(isSelected ? 0.18 : 0.1),
+                        in: Capsule()
+                    )
                     .accessibilityLabel(
                         L10n.format(
                             "%lld running commands",

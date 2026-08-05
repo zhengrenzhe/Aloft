@@ -5,16 +5,23 @@ import SwiftUI
 final class TerminalHostView: NSView {
     private var installedSurface: (any TerminalSurface)?
 
-    init(surface: any TerminalSurface) {
+    init(
+        surface: any TerminalSurface,
+        font: NSFont
+    ) {
         super.init(frame: .zero)
-        install(surface: surface)
+        install(surface: surface, font: font)
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
     }
 
-    func install(surface: any TerminalSurface) {
+    func install(
+        surface: any TerminalSurface,
+        font: NSFont
+    ) {
+        surface.updateFont(font)
         if let installedSurface,
            ObjectIdentifier(installedSurface) ==
                ObjectIdentifier(surface) {
@@ -39,14 +46,34 @@ final class TerminalHostView: NSView {
 struct TerminalOutputView: NSViewRepresentable {
     let surface: any TerminalSurface
 
+    @AppStorage(TerminalFontPreference.familyStorageKey)
+    private var fontFamily =
+        TerminalFontPreference.defaultFamily
+    @AppStorage(TerminalFontPreference.sizeStorageKey)
+    private var fontSize =
+        TerminalFontPreference.defaultSize
+
     func makeNSView(context: Context) -> TerminalHostView {
-        TerminalHostView(surface: surface)
+        TerminalHostView(
+            surface: surface,
+            font: resolvedFont
+        )
     }
 
     func updateNSView(
         _ hostView: TerminalHostView,
         context: Context
     ) {
-        hostView.install(surface: surface)
+        hostView.install(
+            surface: surface,
+            font: resolvedFont
+        )
+    }
+
+    private var resolvedFont: NSFont {
+        TerminalFontPreference.resolve(
+            family: fontFamily,
+            size: fontSize
+        )
     }
 }

@@ -22,17 +22,25 @@ struct MenuBarMatchProjection: Equatable, Identifiable, Sendable {
     let title: String
 }
 
+struct MenuBarAttentionProjection: Equatable, Identifiable, Sendable {
+    let id: UUID
+    let entryID: UUID?
+    let title: String
+}
+
 struct MenuBarProjection: Equatable, Sendable {
     static let maximumTitleLength = 30
 
     let runningCount: Int
     let groupMenus: [MenuBarGroupProjection]
     let latestMatch: MenuBarMatchProjection?
+    let attentionItems: [MenuBarAttentionProjection]
 
     init(
         groups: [CommandGroup],
         liveEntryIDs: Set<UUID>,
-        latestMatch: KeywordMatchEvent?
+        latestMatch: KeywordMatchEvent?,
+        attentionItems: [RuntimeAttentionItem] = []
     ) {
         let configuredEntryIDs = Set(
             groups.flatMap(\.entries).map(\.id)
@@ -69,6 +77,29 @@ struct MenuBarProjection: Equatable, Sendable {
                 title: Self.truncated($0.line)
             )
         }
+        self.attentionItems = attentionItems
+            .filter { item in
+                guard !item.isAcknowledged else {
+                    return false
+                }
+                guard let entryID = item.entryID else {
+                    return true
+                }
+                return configuredEntryIDs.contains(entryID)
+            }
+            .sorted { lhs, rhs in
+                if lhs.createdAt != rhs.createdAt {
+                    return lhs.createdAt > rhs.createdAt
+                }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+            .map {
+                MenuBarAttentionProjection(
+                    id: $0.id,
+                    entryID: $0.entryID,
+                    title: Self.truncated($0.title)
+                )
+            }
     }
 
     private static func truncated(
@@ -113,7 +144,8 @@ struct MenuBarContent: View {
         MenuBarProjection(
             groups: model.orderedGroups,
             liveEntryIDs: model.runtime.liveEntryIDs,
-            latestMatch: model.runtime.latestGlobalMatch
+            latestMatch: model.runtime.latestGlobalMatch,
+            attentionItems: model.runtime.attentionItems
         )
     }
 
@@ -155,6 +187,21 @@ struct MenuBarContent: View {
             }
         }
 
+        if !projection.attentionItems.isEmpty {
+            Divider()
+
+            Text(L10n.string("Needs Attention"))
+            ForEach(projection.attentionItems) { item in
+                Button(item.title) {
+                    model.runtime.acknowledgeAttention(id: item.id)
+                    openManagement(entryID: item.entryID)
+                }
+            }
+            Button(L10n.string("Clear All")) {
+                model.runtime.acknowledgeAllAttention()
+            }
+        }
+
         if let latestMatch = projection.latestMatch {
             Divider()
 
@@ -169,6 +216,7 @@ struct MenuBarContent: View {
         Button(L10n.string("Open Aloft")) {
             openManagement(entryID: nil)
         }
+        SettingsLink()
         Button(L10n.string("Quit Aloft")) {
             NSApplication.shared.terminate(nil)
         }

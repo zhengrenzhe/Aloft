@@ -11,10 +11,10 @@ final class EntryRuntime {
         currentLine: "",
         latestMatch: nil
     )
-    var outputDisplayMode: OutputDisplayMode = .default
     var terminalSurface: (any TerminalSurface)?
     var terminalRendererState: TerminalRendererState = .awaitingWindow
     var lastError: String?
+    var lastTermination: ProcessTerminationRecord?
 
     init(entryID: UUID) {
         self.entryID = entryID

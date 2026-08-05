@@ -58,6 +58,45 @@ final class ManagementWindowPresenterTests: XCTestCase {
         XCTAssertEqual(events, ["activate", "front"])
     }
 
+    func testWindowRegistryActivatesAndOrdersRegisteredWindowFront() {
+        let window = NSWindow()
+        var events: [String] = []
+        let registry = ManagementWindowRegistry(
+            activationAction: ManagementWindowActivationAction(
+                activateApplication: {
+                    events.append("activate")
+                },
+                orderFront: { receivedWindow in
+                    XCTAssertIdentical(receivedWindow, window)
+                    events.append("front")
+                }
+            )
+        )
+        registry.register(window)
+
+        registry.presentRegisteredWindow()
+
+        XCTAssertEqual(events, ["activate", "front"])
+    }
+
+    func testWindowRegistryStillActivatesWhenWindowIsNotRegistered() {
+        var events: [String] = []
+        let registry = ManagementWindowRegistry(
+            activationAction: ManagementWindowActivationAction(
+                activateApplication: {
+                    events.append("activate")
+                },
+                orderFront: { _ in
+                    events.append("front")
+                }
+            )
+        )
+
+        registry.presentRegisteredWindow()
+
+        XCTAssertEqual(events, ["activate"])
+    }
+
     func testMenuTrackingSchedulerActivatesOnceWhenTrackingEnds() {
         let center = NotificationCenter()
         let recorder = ManagementWindowEventRecorder()
@@ -78,6 +117,31 @@ final class ManagementWindowPresenterTests: XCTestCase {
             object: nil
         )
 
+        XCTAssertEqual(recorder.events, ["activate"])
+    }
+
+    func testMenuTrackingSchedulerActivatesWhenActionArrivesAfterTrackingEnded()
+        async {
+        let center = NotificationCenter()
+        let recorder = ManagementWindowEventRecorder()
+        let scheduler =
+            ManagementMenuTrackingActivationScheduler(
+                notificationCenter: center
+            )
+        let activated = expectation(
+            description: "activation ran on the default run loop"
+        )
+        center.post(
+            name: NSMenu.didEndTrackingNotification,
+            object: nil
+        )
+
+        scheduler.schedule {
+            recorder.events.append("activate")
+            activated.fulfill()
+        }
+
+        await fulfillment(of: [activated], timeout: 0.2)
         XCTAssertEqual(recorder.events, ["activate"])
     }
 

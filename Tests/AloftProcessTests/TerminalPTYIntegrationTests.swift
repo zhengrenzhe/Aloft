@@ -91,6 +91,14 @@ final class TerminalPTYIntegrationTests: XCTestCase {
 
         let stopResult = await harness.stop()
         XCTAssertTrue(stopResult.isSuccess)
+        await harness.waitForTerminalIdle()
+        XCTAssertEqual(harness.textOutput, "")
+        XCTAssertEqual(
+            harness.terminalText.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ),
+            ""
+        )
         callbacks.writeProtocolReply(
             Data("late".utf8),
             harness.generation
@@ -104,14 +112,10 @@ final class TerminalPTYIntegrationTests: XCTestCase {
             )!,
             harness.generation
         )
-        await harness.waitForTerminalCallbackDrain(
-            expectedCount: 2
-        )
+        await Task.yield()
 
-        XCTAssertEqual(
-            harness.completedTerminalIOErrors,
-            [.unknownEntry, .unknownEntry]
-        )
+        XCTAssertEqual(harness.terminalIOCompletionCount, 0)
+        XCTAssertTrue(harness.completedTerminalIOErrors.isEmpty)
         XCTAssertEqual(harness.runtime.process.liveness, .stopped)
         XCTAssertNil(harness.runtime.lastError)
         XCTAssertFalse(try harness.supervisorHasManagedProcess())
@@ -156,6 +160,59 @@ final class TerminalPTYIntegrationTests: XCTestCase {
         XCTAssertEqual(
             sessionSeparatorCount(in: text),
             separatorsBefore + 1
+        )
+    }
+
+    func testRestartRestoresLiveViewportAfterScrollingHistory()
+        async throws {
+        let harness = try TerminalPTYIntegrationHarness(
+            shell: "/bin/zsh",
+            command: """
+            i=0
+            while [ "$i" -lt 120 ]; do
+                printf 'HISTORY_%s\\n' "$i"
+                i=$((i + 1))
+            done
+            printf 'FIRST\\n'
+            /bin/sleep 30
+            """
+        )
+        defer { harness.forceStopForTestCleanup() }
+        try await harness.start()
+        let receivedFirst = try await harness.waitForOutput(
+            containing: "FIRST",
+            timeout: .seconds(2)
+        )
+        XCTAssertTrue(receivedFirst)
+
+        let view = harness.swiftTermView
+        view.scroll(toPosition: 0)
+        XCTAssertEqual(view.scrollPosition, 0)
+
+        try await harness.restart(
+            command: "printf 'SECOND\\n'; /bin/sleep 30"
+        )
+        let receivedSecond = try await harness.waitForOutput(
+            containing: "SECOND",
+            timeout: .seconds(2)
+        )
+        XCTAssertTrue(receivedSecond)
+
+        let terminal = try XCTUnwrap(view.terminal)
+        let visibleText = (0..<terminal.rows)
+            .compactMap { terminal.getLine(row: $0) }
+            .map {
+                $0.translateToString(
+                    trimRight: true,
+                    skipNullCellsFollowingWide: true,
+                    characterProvider: terminal.getCharacter(for:)
+                )
+            }
+            .joined(separator: "\n")
+        XCTAssertEqual(view.scrollPosition, 1)
+        XCTAssertTrue(
+            visibleText.contains("SECOND"),
+            "Visible terminal text was \(visibleText.debugDescription)"
         )
     }
 }
@@ -323,6 +380,10 @@ private final class TerminalPTYIntegrationHarness {
 
     func stop() async -> EntryActionResult {
         await runtimeStore.stop(entry, timeout: .seconds(2))
+    }
+
+    func waitForTerminalIdle() async {
+        await surfaceHolder.requiredSurface.waitUntilIdle()
     }
 
     func resize(_ size: TerminalSize) async throws {

@@ -34,10 +34,20 @@ final class ManagementMenuTrackingActivationScheduler:
             name: NSMenu.didEndTrackingNotification,
             object: nil
         )
+        RunLoop.main.perform(inModes: [.default]) {
+            [weak self] in
+            DispatchQueue.main.async { [weak self] in
+                self?.performScheduledActivation()
+            }
+        }
     }
 
     @objc
     private func menuTrackingDidEnd() {
+        performScheduledActivation()
+    }
+
+    private func performScheduledActivation() {
         notificationCenter.removeObserver(
             self,
             name: NSMenu.didEndTrackingNotification,
@@ -62,7 +72,8 @@ struct ManagementWindowPresenter {
     init(
         activateApplication:
             @escaping Activation = {
-            NSApplication.shared.activate()
+            ManagementWindowRegistry.shared
+                .presentRegisteredWindow()
         },
         scheduleActivation:
             @escaping ActivationScheduler = {
