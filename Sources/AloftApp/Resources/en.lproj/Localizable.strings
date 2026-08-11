@@ -15,6 +15,13 @@
 "Command No Longer Exists" = "Command No Longer Exists";
 "Command cannot be empty." = "Command cannot be empty.";
 "Commands" = "Commands";
+"Command Did Not Stop" = "Command Did Not Stop";
+"Commands Did Not Stop" = "Commands Did Not Stop";
+"Command Did Not Restart" = "Command Did Not Restart";
+"Commands Did Not Restart" = "Commands Did Not Restart";
+"Force Stop" = "Force Stop";
+"Force Stop and Restart" = "Force Stop and Restart";
+"SIGTERM timed out after 5 seconds. Force stopping sends SIGKILL to the listed process groups." = "SIGTERM timed out after 5 seconds. Force stopping sends SIGKILL to the listed process groups.";
 "Create or select a group to add commands." = "Create or select a group to add commands.";
 "Delete" = "Delete";
 "Did not stop process group %@." = "Did not stop process group %@.";

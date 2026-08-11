@@ -356,6 +356,83 @@ final class ProcessSupervisorTests: XCTestCase {
         XCTAssertTrue(try ProcessLauncher.processGroupExists(pgid))
     }
 
+    func testForceStopKillsSIGTERMResistantProcessGroup() async throws {
+        let supervisor = ProcessSupervisor()
+        let recorder = DataRecorder()
+        let generation = UUID()
+        let entry = fixtureEntry(
+            command: "trap '' TERM; echo FORCE_STOP_READY; "
+                + "while true; do sleep 1; done"
+        )
+
+        let running = try await supervisor.start(
+            entry: entry,
+            generation: generation
+        ) { data in
+            Task { await recorder.append(data) }
+        }
+        let pid = try XCTUnwrap(running.pid)
+        let pgid = try XCTUnwrap(running.processGroupID)
+        defer { cleanupProcessGroup(pid: pid, pgid: pgid) }
+        let receivedReady = await recorder.waitForText(
+            "FORCE_STOP_READY",
+            timeout: .seconds(2)
+        )
+        XCTAssertTrue(receivedReady)
+
+        let graceful = try await supervisor.stop(
+            entryID: entry.id,
+            timeout: .milliseconds(200)
+        )
+        guard case .timedOut = graceful else {
+            return XCTFail("SIGTERM-resistant group must time out")
+        }
+
+        let forced = try await supervisor.forceStop(
+            entryID: entry.id,
+            generation: generation,
+            pid: pid,
+            processGroupID: pgid,
+            timeout: .seconds(2)
+        )
+
+        XCTAssertEqual(forced, .stopped)
+        XCTAssertFalse(try ProcessLauncher.processGroupExists(pgid))
+        let refreshed = try await supervisor.refresh(entryID: entry.id)
+        XCTAssertEqual(refreshed.liveness, .stopped)
+        XCTAssertNil(refreshed.pid)
+        XCTAssertNil(refreshed.processGroupID)
+        XCTAssertEqual(refreshed.exitResult, .signaled(signal: SIGKILL))
+    }
+
+    func testForceStopTreatsSameGenerationThatAlreadyExitedAsStopped()
+        async throws {
+        let supervisor = ProcessSupervisor()
+        let generation = UUID()
+        let entry = fixtureEntry(command: "exit 0")
+        let running = try await supervisor.start(
+            entry: entry,
+            generation: generation
+        ) { _ in }
+        let pid = try XCTUnwrap(running.pid)
+        let pgid = try XCTUnwrap(running.processGroupID)
+        let stopped = try await waitForSnapshot(
+            supervisor: supervisor,
+            entryID: entry.id,
+            timeout: .seconds(2)
+        ) { $0.liveness == .stopped }
+        XCTAssertEqual(stopped.liveness, .stopped)
+
+        let result = try await supervisor.forceStop(
+            entryID: entry.id,
+            generation: generation,
+            pid: pid,
+            processGroupID: pgid
+        )
+
+        XCTAssertEqual(result, .alreadyStopped)
+    }
+
     func testRejectsAlreadyRunningAndReportsUnknownAndAlreadyStopped() async throws {
         let supervisor = ProcessSupervisor()
         let runningEntry = fixtureEntry(command: "exec sleep 30")

@@ -15,6 +15,13 @@
 "Command No Longer Exists" = "Befehl ist nicht mehr vorhanden";
 "Command cannot be empty." = "Der Befehl darf nicht leer sein.";
 "Commands" = "Befehle";
+"Command Did Not Stop" = "Befehl wurde nicht beendet";
+"Commands Did Not Stop" = "Befehle wurden nicht beendet";
+"Command Did Not Restart" = "Befehl wurde nicht neu gestartet";
+"Commands Did Not Restart" = "Befehle wurden nicht neu gestartet";
+"Force Stop" = "Beenden erzwingen";
+"Force Stop and Restart" = "Beenden und Neustart erzwingen";
+"SIGTERM timed out after 5 seconds. Force stopping sends SIGKILL to the listed process groups." = "Zeitüberschreitung für SIGTERM nach 5 Sekunden. Beim erzwungenen Beenden wird SIGKILL an die aufgeführten Prozessgruppen gesendet.";
 "Create or select a group to add commands." = "Erstelle oder wähle eine Gruppe, um Befehle hinzuzufügen.";
 "Delete" = "Löschen";
 "Did not stop process group %@." = "Prozessgruppe %@ wurde nicht gestoppt.";

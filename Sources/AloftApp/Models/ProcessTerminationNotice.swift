@@ -56,3 +56,18 @@ enum RuntimeOperationName: Equatable, Sendable {
     case stop
     case restart
 }
+
+struct ForceStopConfirmationEntry: Equatable, Sendable {
+    let entryID: UUID
+    let name: String
+    let processGroupID: pid_t
+}
+
+struct ForceStopConfirmation: Equatable, Sendable {
+    let operation: RuntimeOperationName
+    let entries: [ForceStopConfirmationEntry]
+}
+
+typealias ForceStopConfirmationHandler = @MainActor (
+    ForceStopConfirmation
+) async -> Bool

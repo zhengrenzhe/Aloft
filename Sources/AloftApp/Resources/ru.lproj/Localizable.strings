@@ -15,6 +15,13 @@
 "Command No Longer Exists" = "Команда больше не существует";
 "Command cannot be empty." = "Команда не может быть пустой.";
 "Commands" = "Команды";
+"Command Did Not Stop" = "Не удалось остановить команду";
+"Commands Did Not Stop" = "Не удалось остановить команды";
+"Command Did Not Restart" = "Не удалось перезапустить команду";
+"Commands Did Not Restart" = "Не удалось перезапустить команды";
+"Force Stop" = "Остановить принудительно";
+"Force Stop and Restart" = "Остановить принудительно и перезапустить";
+"SIGTERM timed out after 5 seconds. Force stopping sends SIGKILL to the listed process groups." = "Время ожидания SIGTERM истекло через 5 секунд. Принудительная остановка отправляет SIGKILL указанным группам процессов.";
 "Create or select a group to add commands." = "Создайте или выберите группу, чтобы добавить команды.";
 "Delete" = "Удалить";
 "Did not stop process group %@." = "Не удалось остановить группу процессов %@.";

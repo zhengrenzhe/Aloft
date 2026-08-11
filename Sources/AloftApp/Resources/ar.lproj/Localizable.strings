@@ -15,6 +15,13 @@
 "Command No Longer Exists" = "لم يعد الأمر موجودًا";
 "Command cannot be empty." = "لا يمكن أن يكون الأمر فارغًا.";
 "Commands" = "الأوامر";
+"Command Did Not Stop" = "تعذر إيقاف الأمر";
+"Commands Did Not Stop" = "تعذر إيقاف الأوامر";
+"Command Did Not Restart" = "تعذرت إعادة تشغيل الأمر";
+"Commands Did Not Restart" = "تعذرت إعادة تشغيل الأوامر";
+"Force Stop" = "فرض الإيقاف";
+"Force Stop and Restart" = "فرض الإيقاف وإعادة التشغيل";
+"SIGTERM timed out after 5 seconds. Force stopping sends SIGKILL to the listed process groups." = "انتهت مهلة SIGTERM بعد 5 ثوانٍ. يرسل الإيقاف القسري SIGKILL إلى مجموعات العمليات المدرجة.";
 "Create or select a group to add commands." = "أنشئ مجموعة أو حددها لإضافة الأوامر.";
 "Delete" = "حذف";
 "Did not stop process group %@." = "لم تتوقف مجموعة العمليات %@.";

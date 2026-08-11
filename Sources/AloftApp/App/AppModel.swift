@@ -8,6 +8,9 @@ final class AppModel {
     let runtime: RuntimeStore
     let ghostty: GhosttyService
 
+    @ObservationIgnored
+    private let confirmForceStop: ForceStopConfirmationHandler
+
     var selectedGroupID: UUID?
     var selectedEntryID: UUID?
     var presentedError: String?
@@ -28,11 +31,16 @@ final class AppModel {
     init(
         workspace: WorkspaceStore,
         runtime: RuntimeStore,
-        ghostty: GhosttyService
+        ghostty: GhosttyService,
+        confirmForceStop: @escaping ForceStopConfirmationHandler = {
+            confirmation in
+            ForceStopConfirmationService.confirm(confirmation)
+        }
     ) {
         self.workspace = workspace
         self.runtime = runtime
         self.ghostty = ghostty
+        self.confirmForceStop = confirmForceStop
         repairSelection()
     }
 
@@ -351,10 +359,28 @@ final class AppModel {
         )
         let runtime = runtime
         return Task { @MainActor in
-            let result = await runtime.stop(
+            var result = await runtime.stop(
                 entry,
                 reservation: reservation
             )
+            if let request = result.forceStopRequest,
+               await confirmForceStop(
+                   ForceStopConfirmation(
+                       operation: .stop,
+                       entries: [
+                           ForceStopConfirmationEntry(
+                               entryID: entry.id,
+                               name: entry.name,
+                               processGroupID: request.processGroupID
+                           ),
+                       ]
+                   )
+               ) {
+                result = await runtime.forceStop(
+                    entry,
+                    request: request
+                )
+            }
             runtime.recordOperationFailure(
                 operation: .stop,
                 entries: [entry],
@@ -376,10 +402,28 @@ final class AppModel {
         )
         let runtime = runtime
         return Task { @MainActor in
-            let result = await runtime.restart(
+            var result = await runtime.restart(
                 entry,
                 reservation: reservation
             )
+            if let request = result.forceStopRequest,
+               await confirmForceStop(
+                   ForceStopConfirmation(
+                       operation: .restart,
+                       entries: [
+                           ForceStopConfirmationEntry(
+                               entryID: entry.id,
+                               name: entry.name,
+                               processGroupID: request.processGroupID
+                           ),
+                       ]
+                   )
+               ) {
+                result = await runtime.forceRestart(
+                    entry,
+                    request: request
+                )
+            }
             runtime.recordOperationFailure(
                 operation: .restart,
                 entries: [entry],
@@ -426,9 +470,14 @@ final class AppModel {
         )
         let runtime = runtime
         return Task { @MainActor in
-            let results = await runtime.stopAll(
+            var results = await runtime.stopAll(
                 entries,
                 reservation: reservation
+            )
+            results = await resolveForceStops(
+                operation: .stop,
+                entries: entries,
+                results: results
             )
             runtime.recordOperationFailure(
                 operation: .stop,
@@ -452,9 +501,14 @@ final class AppModel {
         )
         let runtime = runtime
         return Task { @MainActor in
-            let results = await runtime.restartAll(
+            var results = await runtime.restartAll(
                 entries,
                 reservation: reservation
+            )
+            results = await resolveForceStops(
+                operation: .restart,
+                entries: entries,
+                results: results
             )
             runtime.recordOperationFailure(
                 operation: .restart,
@@ -463,6 +517,76 @@ final class AppModel {
             )
             return results
         }
+    }
+
+    private func resolveForceStops(
+        operation: RuntimeOperationName,
+        entries: [CommandEntry],
+        results: [EntryActionResult]
+    ) async -> [EntryActionResult] {
+        let candidates: [(
+            index: Int,
+            entry: CommandEntry,
+            request: ForceStopRequest
+        )] = results.indices.compactMap { index in
+            guard entries.indices.contains(index),
+                  let request = results[index].forceStopRequest else {
+                return nil
+            }
+            return (index, entries[index], request)
+        }
+        guard !candidates.isEmpty else {
+            return results
+        }
+
+        let confirmation = ForceStopConfirmation(
+            operation: operation,
+            entries: candidates.map { candidate in
+                ForceStopConfirmationEntry(
+                    entryID: candidate.entry.id,
+                    name: candidate.entry.name,
+                    processGroupID: candidate.request.processGroupID
+                )
+            }
+        )
+        guard await confirmForceStop(confirmation) else {
+            return results
+        }
+
+        let replacements = await withTaskGroup(
+            of: (Int, EntryActionResult).self,
+            returning: [(Int, EntryActionResult)].self
+        ) { group in
+            for candidate in candidates {
+                group.addTask {
+                    let result: EntryActionResult
+                    switch operation {
+                    case .stop:
+                        result = await self.runtime.forceStop(
+                            candidate.entry,
+                            request: candidate.request
+                        )
+                    case .restart:
+                        result = await self.runtime.forceRestart(
+                            candidate.entry,
+                            request: candidate.request
+                        )
+                    }
+                    return (candidate.index, result)
+                }
+            }
+            var replacements: [(Int, EntryActionResult)] = []
+            for await replacement in group {
+                replacements.append(replacement)
+            }
+            return replacements
+        }
+
+        var finalResults = results
+        for (index, replacement) in replacements {
+            finalResults[index] = replacement
+        }
+        return finalResults
     }
 
     func openSelectedEntryInGhostty() {

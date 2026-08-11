@@ -746,6 +746,288 @@ final class AppModelTests: XCTestCase {
         )
     }
 
+    func testTimedOutRestartConfirmsForceStopAndStartsReplacement()
+        async throws {
+        let fake = ModelProcessClient()
+        var confirmations: [ForceStopConfirmation] = []
+        let fixture = try makeAppModel(
+            groupNamesAndEntryNames: [("Frontend", ["One"])],
+            runtime: await makeRuntime(fake),
+            confirmForceStop: { confirmation in
+                confirmations.append(confirmation)
+                return true
+            }
+        )
+        let entry = fixture.model.workspace.configuration
+            .groups[0].entries[0]
+        let first = runningSnapshot(entryID: entry.id, pid: 770)
+        let second = runningSnapshot(entryID: entry.id, pid: 771)
+        await fake.enqueueStart(first, gate: nil)
+        await fake.enqueueStart(second, gate: nil)
+        let start = await fixture.model.runtime.start(entry)
+        XCTAssertTrue(start.isSuccess)
+        await fake.setStopResult(.timedOut(first), for: entry.id)
+
+        let task = try XCTUnwrap(
+            fixture.model.restartEntry(id: entry.id)
+        )
+        let result = await task.value
+
+        XCTAssertTrue(result.isSuccess)
+        XCTAssertEqual(confirmations.count, 1)
+        let confirmation = try XCTUnwrap(confirmations.first)
+        XCTAssertEqual(confirmation.operation, .restart)
+        XCTAssertEqual(confirmation.entries.map(\.entryID), [entry.id])
+        XCTAssertEqual(confirmation.entries.map(\.name), ["One"])
+        XCTAssertEqual(
+            confirmation.entries.map(\.processGroupID),
+            [770]
+        )
+        let forceRequests = await fake.forceStopRequests
+        XCTAssertEqual(forceRequests.count, 1)
+        XCTAssertEqual(forceRequests.first?.processGroupID, 770)
+        let startCallCount = await fake.startCallCount
+        XCTAssertEqual(startCallCount, 2)
+        XCTAssertEqual(
+            fixture.model.runtime.runtime(for: entry.id).process,
+            second
+        )
+        XCTAssertTrue(
+            fixture.model.runtime.unacknowledgedAttentionItems.isEmpty
+        )
+    }
+
+    func testCancellingForceRestartKeepsOriginalProcess() async throws {
+        let fake = ModelProcessClient()
+        var confirmations: [ForceStopConfirmation] = []
+        let fixture = try makeAppModel(
+            groupNamesAndEntryNames: [("Frontend", ["One"])],
+            runtime: await makeRuntime(fake),
+            confirmForceStop: { confirmation in
+                confirmations.append(confirmation)
+                return false
+            }
+        )
+        let entry = fixture.model.workspace.configuration
+            .groups[0].entries[0]
+        let running = runningSnapshot(entryID: entry.id, pid: 772)
+        await fake.enqueueStart(running, gate: nil)
+        let start = await fixture.model.runtime.start(entry)
+        XCTAssertTrue(start.isSuccess)
+        await fake.setStopResult(.timedOut(running), for: entry.id)
+
+        let task = try XCTUnwrap(
+            fixture.model.restartEntry(id: entry.id)
+        )
+        let result = await task.value
+
+        XCTAssertFalse(result.isSuccess)
+        XCTAssertEqual(confirmations.count, 1)
+        let forceRequests = await fake.forceStopRequests
+        XCTAssertTrue(forceRequests.isEmpty)
+        let startCallCount = await fake.startCallCount
+        XCTAssertEqual(startCallCount, 1)
+        XCTAssertEqual(
+            fixture.model.runtime.runtime(for: entry.id).process,
+            running
+        )
+        XCTAssertEqual(
+            fixture.model.runtime.unacknowledgedAttentionItems.count,
+            1
+        )
+    }
+
+    func testTimedOutStopConfirmsForceStopWithoutRestarting()
+        async throws {
+        let fake = ModelProcessClient()
+        var confirmations: [ForceStopConfirmation] = []
+        let fixture = try makeAppModel(
+            groupNamesAndEntryNames: [("Frontend", ["One"])],
+            runtime: await makeRuntime(fake),
+            confirmForceStop: { confirmation in
+                confirmations.append(confirmation)
+                return true
+            }
+        )
+        let entry = fixture.model.workspace.configuration
+            .groups[0].entries[0]
+        let running = runningSnapshot(entryID: entry.id, pid: 773)
+        await fake.enqueueStart(running, gate: nil)
+        let start = await fixture.model.runtime.start(entry)
+        XCTAssertTrue(start.isSuccess)
+        await fake.setStopResult(.timedOut(running), for: entry.id)
+
+        let task = try XCTUnwrap(fixture.model.stopEntry(id: entry.id))
+        let result = await task.value
+
+        XCTAssertTrue(result.isSuccess)
+        XCTAssertEqual(confirmations.map(\.operation), [.stop])
+        let forceRequests = await fake.forceStopRequests
+        XCTAssertEqual(forceRequests.map(\.processGroupID), [773])
+        let startCallCount = await fake.startCallCount
+        XCTAssertEqual(startCallCount, 1)
+        XCTAssertEqual(
+            fixture.model.runtime.runtime(for: entry.id).process.liveness,
+            .stopped
+        )
+        XCTAssertTrue(
+            fixture.model.runtime.unacknowledgedAttentionItems.isEmpty
+        )
+    }
+
+    func testForceStopTimeoutReportsFailureAndDoesNotRestart()
+        async throws {
+        let fake = ModelProcessClient()
+        let fixture = try makeAppModel(
+            groupNamesAndEntryNames: [("Frontend", ["One"])],
+            runtime: await makeRuntime(fake),
+            confirmForceStop: { _ in true }
+        )
+        let entry = fixture.model.workspace.configuration
+            .groups[0].entries[0]
+        let running = runningSnapshot(entryID: entry.id, pid: 774)
+        await fake.enqueueStart(running, gate: nil)
+        let start = await fixture.model.runtime.start(entry)
+        XCTAssertTrue(start.isSuccess)
+        await fake.setStopResult(.timedOut(running), for: entry.id)
+        await fake.setForceStopResult(.timedOut(running))
+
+        let task = try XCTUnwrap(
+            fixture.model.restartEntry(id: entry.id)
+        )
+        let result = await task.value
+
+        XCTAssertFalse(result.isSuccess)
+        let startCallCount = await fake.startCallCount
+        XCTAssertEqual(startCallCount, 1)
+        XCTAssertEqual(
+            fixture.model.runtime.runtime(for: entry.id).process,
+            running
+        )
+        XCTAssertEqual(
+            fixture.model.runtime.unacknowledgedAttentionItems.count,
+            1
+        )
+        XCTAssertEqual(
+            fixture.model.runtime.unacknowledgedAttentionItems.first?.kind,
+            .operationFailure
+        )
+    }
+
+    func testTimedOutGroupRestartConfirmsOnceAndReplacesAllProcesses()
+        async throws {
+        let fake = ModelProcessClient()
+        var confirmations: [ForceStopConfirmation] = []
+        let fixture = try makeAppModel(
+            groupNamesAndEntryNames: [
+                ("Frontend", ["One", "Two"]),
+            ],
+            runtime: await makeRuntime(fake),
+            confirmForceStop: { confirmation in
+                confirmations.append(confirmation)
+                return true
+            }
+        )
+        let group = fixture.model.workspace.configuration.groups[0]
+        for (index, entry) in group.entries.enumerated() {
+            let first = runningSnapshot(
+                entryID: entry.id,
+                pid: pid_t(780 + index)
+            )
+            let second = runningSnapshot(
+                entryID: entry.id,
+                pid: pid_t(790 + index)
+            )
+            await fake.enqueueStart(first, gate: nil)
+            await fake.enqueueStart(second, gate: nil)
+            let start = await fixture.model.runtime.start(entry)
+            XCTAssertTrue(start.isSuccess)
+            await fake.setStopResult(
+                .timedOut(first),
+                for: entry.id
+            )
+        }
+
+        let task = try XCTUnwrap(
+            fixture.model.restartGroup(id: group.id)
+        )
+        let results = await task.value
+
+        XCTAssertTrue(results.allSatisfy(\.isSuccess))
+        XCTAssertEqual(confirmations.count, 1)
+        let confirmation = try XCTUnwrap(confirmations.first)
+        XCTAssertEqual(confirmation.operation, .restart)
+        XCTAssertEqual(
+            confirmation.entries.map(\.entryID),
+            group.entries.map(\.id)
+        )
+        XCTAssertEqual(
+            confirmation.entries.map(\.processGroupID),
+            [780, 781]
+        )
+        let forceRequests = await fake.forceStopRequests
+        XCTAssertEqual(forceRequests.count, 2)
+        let startCallCount = await fake.startCallCount
+        XCTAssertEqual(startCallCount, 4)
+        XCTAssertEqual(
+            fixture.model.runtime.liveEntryIDs,
+            Set(group.entries.map(\.id))
+        )
+        XCTAssertTrue(
+            fixture.model.runtime.unacknowledgedAttentionItems.isEmpty
+        )
+    }
+
+    func testTimedOutGroupStopConfirmsOnceAndStopsAllProcesses()
+        async throws {
+        let fake = ModelProcessClient()
+        var confirmations: [ForceStopConfirmation] = []
+        let fixture = try makeAppModel(
+            groupNamesAndEntryNames: [
+                ("Frontend", ["One", "Two"]),
+            ],
+            runtime: await makeRuntime(fake),
+            confirmForceStop: { confirmation in
+                confirmations.append(confirmation)
+                return true
+            }
+        )
+        let group = fixture.model.workspace.configuration.groups[0]
+        for (index, entry) in group.entries.enumerated() {
+            let running = runningSnapshot(
+                entryID: entry.id,
+                pid: pid_t(800 + index)
+            )
+            await fake.enqueueStart(running, gate: nil)
+            let start = await fixture.model.runtime.start(entry)
+            XCTAssertTrue(start.isSuccess)
+            await fake.setStopResult(
+                .timedOut(running),
+                for: entry.id
+            )
+        }
+
+        let task = try XCTUnwrap(fixture.model.stopGroup(id: group.id))
+        let results = await task.value
+
+        XCTAssertTrue(results.allSatisfy(\.isSuccess))
+        XCTAssertEqual(confirmations.count, 1)
+        let confirmation = try XCTUnwrap(confirmations.first)
+        XCTAssertEqual(confirmation.operation, .stop)
+        XCTAssertEqual(
+            confirmation.entries.map(\.processGroupID),
+            [800, 801]
+        )
+        let forceRequests = await fake.forceStopRequests
+        XCTAssertEqual(forceRequests.count, 2)
+        let startCallCount = await fake.startCallCount
+        XCTAssertEqual(startCallCount, 2)
+        XCTAssertTrue(fixture.model.runtime.liveEntryIDs.isEmpty)
+        XCTAssertTrue(
+            fixture.model.runtime.unacknowledgedAttentionItems.isEmpty
+        )
+    }
+
     func testGroupStopPublishesOneAggregatedAttention() async throws {
         let fake = ModelProcessClient()
         let fixture = try makeAppModel(
@@ -853,7 +1135,10 @@ final class AppModelTests: XCTestCase {
 @MainActor
 private func makeAppModel(
     groupNamesAndEntryNames: [(String, [String])],
-    runtime: RuntimeStore? = nil
+    runtime: RuntimeStore? = nil,
+    confirmForceStop: @escaping ForceStopConfirmationHandler = {
+        _ in false
+    }
 ) throws -> (model: AppModel, directory: URL) {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString)
@@ -878,7 +1163,8 @@ private func makeAppModel(
             workspace: workspace,
             runtime: runtime
                 ?? RuntimeStore(supervisor: ProcessSupervisor()),
-            ghostty: GhosttyService()
+            ghostty: GhosttyService(),
+            confirmForceStop: confirmForceStop
         ),
         directory
     )
@@ -893,7 +1179,9 @@ private actor ModelProcessClient {
     private var queuedStarts: [QueuedStart] = []
     private var records: [UUID: ProcessSnapshot] = [:]
     private var stopResults: [UUID: StopResult] = [:]
+    private var forceStopResult: StopResult?
     private(set) var startCallCount = 0
+    private(set) var forceStopRequests: [ForceStopRequest] = []
 
     func enqueueStart(
         _ snapshot: ProcessSnapshot,
@@ -911,6 +1199,10 @@ private actor ModelProcessClient {
         stopResults[entryID] = result
     }
 
+    func setForceStopResult(_ result: StopResult?) {
+        forceStopResult = result
+    }
+
     func client() -> RuntimeProcessClient {
         RuntimeProcessClient(
             start: { entry, _, _ in
@@ -924,6 +1216,17 @@ private actor ModelProcessClient {
             },
             stop: { entryID, _ in
                 try await self.stop(entryID: entryID)
+            },
+            forceStop: {
+                entryID, generation, pid, processGroupID, _ in
+                try await self.forceStop(
+                    ForceStopRequest(
+                        entryID: entryID,
+                        generation: generation,
+                        pid: pid,
+                        processGroupID: processGroupID
+                    )
+                )
             },
             refresh: { entryID in
                 try await self.refresh(entryID: entryID)
@@ -958,6 +1261,25 @@ private actor ModelProcessClient {
             return result
         }
         records[entryID] = stoppedModelSnapshot(entryID: entryID)
+        return .stopped
+    }
+
+    private func forceStop(
+        _ request: ForceStopRequest
+    ) throws -> StopResult {
+        guard let existing = records[request.entryID],
+              existing.pid == request.pid,
+              existing.processGroupID == request.processGroupID else {
+            throw ProcessSupervisorError.staleGeneration
+        }
+        forceStopRequests.append(request)
+        if let forceStopResult {
+            return forceStopResult
+        }
+        records[request.entryID] = stoppedModelSnapshot(
+            entryID: request.entryID,
+            exitResult: .signaled(signal: SIGKILL)
+        )
         return .stopped
     }
 
@@ -1013,7 +1335,8 @@ private func runningSnapshot(
 }
 
 private func stoppedModelSnapshot(
-    entryID: UUID
+    entryID: UUID,
+    exitResult: ChildWaitResult? = nil
 ) -> ProcessSnapshot {
     ProcessSnapshot(
         entryID: entryID,
@@ -1021,7 +1344,7 @@ private func stoppedModelSnapshot(
         processGroupID: nil,
         liveness: .stopped,
         launchedAt: nil,
-        exitResult: nil
+        exitResult: exitResult
     )
 }
 

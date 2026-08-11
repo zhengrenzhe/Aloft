@@ -15,6 +15,13 @@
 "Command No Longer Exists" = "コマンドは存在しません";
 "Command cannot be empty." = "コマンドを空にすることはできません。";
 "Commands" = "コマンド";
+"Command Did Not Stop" = "コマンドを停止できませんでした";
+"Commands Did Not Stop" = "コマンドを停止できませんでした";
+"Command Did Not Restart" = "コマンドを再起動できませんでした";
+"Commands Did Not Restart" = "コマンドを再起動できませんでした";
+"Force Stop" = "強制停止";
+"Force Stop and Restart" = "強制停止して再起動";
+"SIGTERM timed out after 5 seconds. Force stopping sends SIGKILL to the listed process groups." = "SIGTERM は 5 秒でタイムアウトしました。強制停止すると、表示されたプロセスグループに SIGKILL が送信されます。";
 "Create or select a group to add commands." = "コマンドを追加するグループを作成または選択してください。";
 "Delete" = "削除";
 "Did not stop process group %@." = "プロセスグループ %@ を停止できませんでした。";

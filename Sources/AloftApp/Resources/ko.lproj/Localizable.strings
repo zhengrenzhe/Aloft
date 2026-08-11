@@ -15,6 +15,13 @@
 "Command No Longer Exists" = "명령이 더 이상 존재하지 않습니다";
 "Command cannot be empty." = "명령은 비워 둘 수 없습니다.";
 "Commands" = "명령";
+"Command Did Not Stop" = "명령이 중지되지 않았습니다";
+"Commands Did Not Stop" = "명령이 중지되지 않았습니다";
+"Command Did Not Restart" = "명령이 재시작되지 않았습니다";
+"Commands Did Not Restart" = "명령이 재시작되지 않았습니다";
+"Force Stop" = "강제 중지";
+"Force Stop and Restart" = "강제 중지 후 재시작";
+"SIGTERM timed out after 5 seconds. Force stopping sends SIGKILL to the listed process groups." = "SIGTERM이 5초 후 시간 초과되었습니다. 강제 중지는 나열된 프로세스 그룹에 SIGKILL을 보냅니다.";
 "Create or select a group to add commands." = "명령을 추가할 그룹을 만들거나 선택하십시오.";
 "Delete" = "삭제";
 "Did not stop process group %@." = "프로세스 그룹 %@을(를) 중지하지 못했습니다.";

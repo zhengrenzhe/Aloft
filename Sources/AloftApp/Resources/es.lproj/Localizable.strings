@@ -15,6 +15,13 @@
 "Command No Longer Exists" = "El comando ya no existe";
 "Command cannot be empty." = "El comando no puede estar vacío.";
 "Commands" = "Comandos";
+"Command Did Not Stop" = "El comando no se detuvo";
+"Commands Did Not Stop" = "Los comandos no se detuvieron";
+"Command Did Not Restart" = "El comando no se reinició";
+"Commands Did Not Restart" = "Los comandos no se reiniciaron";
+"Force Stop" = "Forzar detención";
+"Force Stop and Restart" = "Forzar detención y reiniciar";
+"SIGTERM timed out after 5 seconds. Force stopping sends SIGKILL to the listed process groups." = "SIGTERM agotó el tiempo de espera tras 5 segundos. La detención forzada envía SIGKILL a los grupos de procesos indicados.";
 "Create or select a group to add commands." = "Crea o selecciona un grupo para añadir comandos.";
 "Delete" = "Eliminar";
 "Did not stop process group %@." = "No se detuvo el grupo de procesos %@.";

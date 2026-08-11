@@ -210,6 +210,7 @@ actor ScriptedTerminalProcessClient {
     private(set) var resizes: [
         (entryID: UUID, generation: UUID, size: TerminalSize)
     ] = []
+    private(set) var forceStopRequests: [ForceStopRequest] = []
 
     init(startPlans: [ScriptedTerminalStartPlan]) {
         self.startPlans = startPlans
@@ -240,6 +241,17 @@ actor ScriptedTerminalProcessClient {
             },
             stop: { entryID, _ in
                 await self.stop(entryID: entryID)
+            },
+            forceStop: {
+                entryID, generation, pid, processGroupID, _ in
+                try await self.forceStop(
+                    ForceStopRequest(
+                        entryID: entryID,
+                        generation: generation,
+                        pid: pid,
+                        processGroupID: processGroupID
+                    )
+                )
             },
             refresh: { entryID in
                 try await self.refresh(entryID: entryID)
@@ -327,6 +339,26 @@ actor ScriptedTerminalProcessClient {
             liveness: .stopped,
             launchedAt: existing.launchedAt,
             exitResult: .exited(code: 0)
+        )
+        return .stopped
+    }
+
+    private func forceStop(
+        _ request: ForceStopRequest
+    ) throws -> StopResult {
+        guard let existing = records[request.entryID],
+              existing.pid == request.pid,
+              existing.processGroupID == request.processGroupID else {
+            throw ProcessSupervisorError.staleGeneration
+        }
+        forceStopRequests.append(request)
+        records[request.entryID] = ProcessSnapshot(
+            entryID: request.entryID,
+            pid: nil,
+            processGroupID: nil,
+            liveness: .stopped,
+            launchedAt: existing.launchedAt,
+            exitResult: .signaled(signal: SIGKILL)
         )
         return .stopped
     }

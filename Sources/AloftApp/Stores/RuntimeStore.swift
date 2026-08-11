@@ -2,9 +2,27 @@ import Darwin
 import Foundation
 import Observation
 
+struct ForceStopRequest: Equatable, Sendable {
+    let entryID: UUID
+    let generation: UUID
+    let pid: pid_t
+    let processGroupID: pid_t
+}
+
 struct EntryActionResult: Equatable, Sendable {
     let entryID: UUID
     let errorDescription: String?
+    let forceStopRequest: ForceStopRequest?
+
+    init(
+        entryID: UUID,
+        errorDescription: String?,
+        forceStopRequest: ForceStopRequest? = nil
+    ) {
+        self.entryID = entryID
+        self.errorDescription = errorDescription
+        self.forceStopRequest = forceStopRequest
+    }
 
     var isSuccess: Bool {
         errorDescription == nil
@@ -36,6 +54,13 @@ struct RuntimeProcessClient: Sendable {
         UUID,
         Duration
     ) async throws -> StopResult
+    typealias ForceStopOperation = @Sendable (
+        UUID,
+        UUID,
+        pid_t,
+        pid_t,
+        Duration
+    ) async throws -> StopResult
     typealias RefreshOperation = @Sendable (
         UUID
     ) async throws -> ProcessSnapshot
@@ -46,6 +71,7 @@ struct RuntimeProcessClient: Sendable {
     private let writeOperation: WriteOperation
     private let resizeOperation: ResizeOperation
     private let stopOperation: StopOperation
+    private let forceStopOperation: ForceStopOperation
     private let refreshOperation: RefreshOperation
     private let snapshotsOperation: SnapshotsOperation
 
@@ -54,6 +80,10 @@ struct RuntimeProcessClient: Sendable {
         write: @escaping WriteOperation,
         resize: @escaping ResizeOperation,
         stop: @escaping StopOperation,
+        forceStop: @escaping ForceStopOperation = {
+            _, _, _, _, _ in
+            throw ProcessSupervisorError.unknownEntry
+        },
         refresh: @escaping RefreshOperation,
         snapshots: @escaping SnapshotsOperation
     ) {
@@ -61,6 +91,7 @@ struct RuntimeProcessClient: Sendable {
         writeOperation = write
         resizeOperation = resize
         stopOperation = stop
+        forceStopOperation = forceStop
         refreshOperation = refresh
         snapshotsOperation = snapshots
     }
@@ -91,6 +122,16 @@ struct RuntimeProcessClient: Sendable {
             stop: { entryID, timeout in
                 try await supervisor.stop(
                     entryID: entryID,
+                    timeout: timeout
+                )
+            },
+            forceStop: {
+                entryID, generation, pid, processGroupID, timeout in
+                try await supervisor.forceStop(
+                    entryID: entryID,
+                    generation: generation,
+                    pid: pid,
+                    processGroupID: processGroupID,
                     timeout: timeout
                 )
             },
@@ -136,6 +177,19 @@ struct RuntimeProcessClient: Sendable {
         timeout: Duration
     ) async throws -> StopResult {
         try await stopOperation(entryID, timeout)
+    }
+
+    func forceStop(
+        request: ForceStopRequest,
+        timeout: Duration
+    ) async throws -> StopResult {
+        try await forceStopOperation(
+            request.entryID,
+            request.generation,
+            request.pid,
+            request.processGroupID,
+            timeout
+        )
     }
 
     func refresh(entryID: UUID) async throws -> ProcessSnapshot {
@@ -248,6 +302,9 @@ final class RuntimeStore {
 
     @ObservationIgnored
     private var runtimeGenerations: [UUID: UUID] = [:]
+
+    @ObservationIgnored
+    private var stoppedGenerations: [UUID: UUID] = [:]
 
     @ObservationIgnored
     private var projectionRevisions: [UUID: UInt64] = [:]
@@ -484,6 +541,83 @@ final class RuntimeStore {
             result = stopped
         }
 
+        finishOperation(entryID: entry.id, operationID: operationID)
+        await lane.release()
+        return result
+    }
+
+    func forceRestart(
+        _ entry: CommandEntry,
+        request: ForceStopRequest,
+        timeout: Duration = .seconds(2)
+    ) async -> EntryActionResult {
+        let reservation = reserveOperations(entryIDs: [entry.id])
+        defer { releaseReservation(reservation) }
+        guard admitLaunch() else {
+            return recordFailure(
+                RuntimeStoreError.terminationInProgress,
+                for: runtime(for: entry.id)
+            )
+        }
+        defer { completeAdmittedLaunch() }
+
+        let lane = lane(for: entry.id)
+        await lane.acquire()
+        if Task.isCancelled {
+            await lane.release()
+            return recordFailure(
+                RuntimeStoreError.operationCancelled,
+                for: runtime(for: entry.id)
+            )
+        }
+        let operationID = beginOperation(entryID: entry.id)
+        knownEntries[entry.id] = entry
+        let stopped = await forceStopLocked(
+            entryID: entry.id,
+            request: request,
+            timeout: timeout,
+            operationID: operationID,
+            clearOutputOnSuccess: false
+        )
+        let result: EntryActionResult
+        if stopped.isSuccess {
+            result = await startLocked(
+                entry,
+                operationID: operationID
+            )
+        } else {
+            result = stopped
+        }
+        finishOperation(entryID: entry.id, operationID: operationID)
+        await lane.release()
+        return result
+    }
+
+    func forceStop(
+        _ entry: CommandEntry,
+        request: ForceStopRequest,
+        timeout: Duration = .seconds(2)
+    ) async -> EntryActionResult {
+        let reservation = reserveOperations(entryIDs: [entry.id])
+        defer { releaseReservation(reservation) }
+        let lane = lane(for: entry.id)
+        await lane.acquire()
+        if Task.isCancelled {
+            await lane.release()
+            return recordFailure(
+                RuntimeStoreError.operationCancelled,
+                for: runtime(for: entry.id)
+            )
+        }
+        let operationID = beginOperation(entryID: entry.id)
+        knownEntries[entry.id] = entry
+        let result = await forceStopLocked(
+            entryID: entry.id,
+            request: request,
+            timeout: timeout,
+            operationID: operationID,
+            clearOutputOnSuccess: true
+        )
         finishOperation(entryID: entry.id, operationID: operationID)
         await lane.release()
         return result
@@ -835,6 +969,7 @@ final class RuntimeStore {
         _ = advanceManagedEnumerationRevision()
         removeOutputSessions(entryID: entryID, except: nil)
         runtimeGenerations.removeValue(forKey: entryID)
+        stoppedGenerations.removeValue(forKey: entryID)
         projectionRevisions.removeValue(forKey: entryID)
         operationIDs.removeValue(forKey: entryID)
         entryLanes.removeValue(forKey: entryID)
@@ -1159,6 +1294,137 @@ final class RuntimeStore {
                 let description = didNotStopDescription(snapshot)
                 entryRuntime.lastError = description
                 beginMonitoring()
+                let forceStopRequest: ForceStopRequest?
+                if let generation,
+                   let pid = snapshot.pid,
+                   let processGroupID = snapshot.processGroupID {
+                    forceStopRequest = ForceStopRequest(
+                        entryID: entryID,
+                        generation: generation,
+                        pid: pid,
+                        processGroupID: processGroupID
+                    )
+                } else {
+                    forceStopRequest = nil
+                }
+                return EntryActionResult(
+                    entryID: entryID,
+                    errorDescription: description,
+                    forceStopRequest: forceStopRequest
+                )
+            }
+        } catch {
+            guard operationIsCurrent(
+                entryID: entryID,
+                operationID: operationID
+            ), runtimeGenerations[entryID] == generation else {
+                return supersededResult(entryID: entryID)
+            }
+            return recordFailure(error, for: entryRuntime)
+        }
+    }
+
+    private func forceStopLocked(
+        entryID: UUID,
+        request: ForceStopRequest,
+        timeout: Duration,
+        operationID: UUID,
+        clearOutputOnSuccess: Bool
+    ) async -> EntryActionResult {
+        let entryRuntime = runtime(for: entryID)
+        guard request.entryID == entryID,
+              (runtimeGenerations[entryID]
+                ?? stoppedGenerations[entryID]) == request.generation else {
+            return recordFailure(
+                RuntimeStoreError.operationSuperseded,
+                for: entryRuntime
+            )
+        }
+        if entryRuntime.process.liveness == .stopped,
+           entryRuntime.process.pid == nil,
+           entryRuntime.process.processGroupID == nil {
+            entryRuntime.lastError = nil
+            if clearOutputOnSuccess {
+                finishStoppedOutput(
+                    entryID: entryID,
+                    generation: request.generation
+                )
+            }
+            stopMonitoringIfIdle()
+            return EntryActionResult(
+                entryID: entryID,
+                errorDescription: nil
+            )
+        }
+        guard entryRuntime.process.pid == request.pid,
+              entryRuntime.process.processGroupID
+                == request.processGroupID else {
+            return recordFailure(
+                RuntimeStoreError.operationSuperseded,
+                for: entryRuntime
+            )
+        }
+
+        do {
+            let result = try await processClient.forceStop(
+                request: request,
+                timeout: timeout
+            )
+            guard operationIsCurrent(
+                entryID: entryID,
+                operationID: operationID
+            ), runtimeGenerations[entryID] == request.generation else {
+                return staleStopResult(result, entryID: entryID)
+            }
+
+            switch result {
+            case .stopped, .alreadyStopped:
+                let stopProjectionRevision =
+                    advanceProjectionRevision(entryID: entryID)
+                entryRuntime.lastError = nil
+                let snapshot = try await processClient.refresh(
+                    entryID: entryID
+                )
+                guard operationIsCurrent(
+                    entryID: entryID,
+                    operationID: operationID
+                ), runtimeGenerations[entryID]
+                    == request.generation else {
+                    return supersededResult(entryID: entryID)
+                }
+                guard projectionRevisions[entryID]
+                        == stopProjectionRevision else {
+                    stopMonitoringIfIdle()
+                    return EntryActionResult(
+                        entryID: entryID,
+                        errorDescription: nil
+                    )
+                }
+                entryRuntime.process = snapshot
+                if snapshot.liveness == .stopped,
+                   snapshot.processGroupID == nil {
+                    entryRuntime.lastTermination = terminationRecord(
+                        result: snapshot.exitResult,
+                        intentional: true
+                    )
+                    if clearOutputOnSuccess {
+                        finishStoppedOutput(
+                            entryID: entryID,
+                            generation: request.generation
+                        )
+                    }
+                }
+                stopMonitoringIfIdle()
+                return EntryActionResult(
+                    entryID: entryID,
+                    errorDescription: nil
+                )
+            case .timedOut(let snapshot):
+                _ = advanceProjectionRevision(entryID: entryID)
+                entryRuntime.process = snapshot
+                let description = didNotStopDescription(snapshot)
+                entryRuntime.lastError = description
+                beginMonitoring()
                 return EntryActionResult(
                     entryID: entryID,
                     errorDescription: description
@@ -1168,7 +1434,7 @@ final class RuntimeStore {
             guard operationIsCurrent(
                 entryID: entryID,
                 operationID: operationID
-            ), runtimeGenerations[entryID] == generation else {
+            ), runtimeGenerations[entryID] == request.generation else {
                 return supersededResult(entryID: entryID)
             }
             return recordFailure(error, for: entryRuntime)
@@ -1186,6 +1452,7 @@ final class RuntimeStore {
                 generation: generation
             )
             if runtimeGenerations[entryID] == generation {
+                stoppedGenerations[entryID] = generation
                 runtimeGenerations.removeValue(forKey: entryID)
             }
         }
@@ -1534,6 +1801,7 @@ final class RuntimeStore {
             entryID: entryID,
             except: generation
         )
+        stoppedGenerations.removeValue(forKey: entryID)
         runtimeGenerations[entryID] = generation
         apply(
             session.latestUpdate,
@@ -1600,6 +1868,7 @@ final class RuntimeStore {
             return
         }
         if !sameProcessIdentity(entryRuntime.process, snapshot) {
+            stoppedGenerations.removeValue(forKey: snapshot.entryID)
             runtimeGenerations[snapshot.entryID] = UUID()
             removeOutputSessions(
                 entryID: snapshot.entryID,

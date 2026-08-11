@@ -222,6 +222,68 @@ actor ProcessSupervisor {
         }
     }
 
+    func forceStop(
+        entryID: UUID,
+        generation: UUID,
+        pid: pid_t,
+        processGroupID: pid_t,
+        timeout: Duration = .seconds(2)
+    ) async throws -> StopResult {
+        let snapshot = try refreshRecord(entryID: entryID)
+        guard let record = records[entryID],
+              record.generation == generation else {
+            throw ProcessSupervisorError.staleGeneration
+        }
+        if snapshot.liveness == .stopped {
+            return .alreadyStopped
+        }
+        guard record.pid == pid,
+              record.processGroupID == processGroupID,
+              let managedProcess = record.managedProcess else {
+            throw ProcessSupervisorError.staleGeneration
+        }
+        var captured = CapturedProcess(
+            generation: generation,
+            entryID: entryID,
+            pid: pid,
+            processGroupID: processGroupID,
+            launchedAt: record.launchedAt,
+            exitResult: record.exitResult,
+            managedProcess: managedProcess
+        )
+
+        do {
+            try ProcessLauncher.signalProcessGroup(
+                processGroupID,
+                signal: SIGKILL
+            )
+        } catch let error as NSError
+            where error.domain == NSPOSIXErrorDomain && error.code == ESRCH {
+            let refreshed = try refreshCapturedProcess(&captured)
+            return refreshed.liveness == .stopped
+                ? .stopped
+                : .timedOut(refreshed)
+        }
+
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while true {
+            let refreshed = try refreshCapturedProcess(&captured)
+            if refreshed.liveness == .stopped {
+                return .stopped
+            }
+            let now = clock.now
+            if now >= deadline {
+                return .timedOut(refreshed)
+            }
+            let nextProbe = now.advanced(by: probeInterval)
+            try await clock.sleep(
+                until: min(nextProbe, deadline),
+                tolerance: .zero
+            )
+        }
+    }
+
     func restart(
         entry: CommandEntry,
         onOutput: @escaping OutputHandler,

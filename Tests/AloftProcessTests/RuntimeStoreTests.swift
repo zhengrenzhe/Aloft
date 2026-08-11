@@ -520,6 +520,200 @@ final class RuntimeStoreTests: XCTestCase {
         )
     }
 
+    func testTimedOutStopReturnsCapturedForceStopRequest() async throws {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(outputBeforeReturn: Data()),
+            ]
+        )
+        let start = await fixture.runtime.start(fixture.entry)
+        XCTAssertTrue(start.isSuccess)
+        let generations = await fixture.process.startedGenerations
+        let generation = try XCTUnwrap(generations.first)
+        let running = fixture.runtime.runtime(
+            for: fixture.entry.id
+        ).process
+        await fixture.process.setStopResult(.timedOut(running))
+
+        let result = await fixture.runtime.stop(fixture.entry)
+
+        let request = try XCTUnwrap(result.forceStopRequest)
+        XCTAssertEqual(request.entryID, fixture.entry.id)
+        XCTAssertEqual(request.generation, generation)
+        XCTAssertEqual(request.pid, running.pid)
+        XCTAssertEqual(
+            request.processGroupID,
+            running.processGroupID
+        )
+    }
+
+    func testForceRestartStopsCapturedGenerationAndStartsReplacement()
+        async throws {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(outputBeforeReturn: Data("first".utf8)),
+                .success(outputBeforeReturn: Data("second".utf8)),
+            ]
+        )
+        let firstStart = await fixture.runtime.start(fixture.entry)
+        XCTAssertTrue(firstStart.isSuccess)
+        let first = fixture.runtime.runtime(
+            for: fixture.entry.id
+        ).process
+        await fixture.process.setStopResult(.timedOut(first))
+        let gracefulRestart = await fixture.runtime.restart(
+            fixture.entry
+        )
+        let request = try XCTUnwrap(
+            gracefulRestart.forceStopRequest
+        )
+        await fixture.process.setStopResult(nil)
+
+        let forcedRestart = await fixture.runtime.forceRestart(
+            fixture.entry,
+            request: request,
+            timeout: .seconds(2)
+        )
+
+        XCTAssertTrue(forcedRestart.isSuccess)
+        let forceRequests = await fixture.process.forceStopRequests
+        XCTAssertEqual(forceRequests, [request])
+        let generations = await fixture.process.startedGenerations
+        XCTAssertEqual(generations.count, 2)
+        let replacement = fixture.runtime.runtime(
+            for: fixture.entry.id
+        ).process
+        XCTAssertEqual(replacement.liveness, .running)
+        XCTAssertNotEqual(replacement.pid, first.pid)
+        XCTAssertNotEqual(replacement.processGroupID, first.processGroupID)
+    }
+
+    func testForceStopClearsOutputWithoutStartingReplacement()
+        async throws {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(outputBeforeReturn: Data("visible".utf8)),
+            ]
+        )
+        let firstStart = await fixture.runtime.start(fixture.entry)
+        XCTAssertTrue(firstStart.isSuccess)
+        let running = fixture.runtime.runtime(
+            for: fixture.entry.id
+        ).process
+        await fixture.process.setStopResult(.timedOut(running))
+        let gracefulStop = await fixture.runtime.stop(fixture.entry)
+        let request = try XCTUnwrap(gracefulStop.forceStopRequest)
+        await fixture.process.setStopResult(nil)
+
+        let forcedStop = await fixture.runtime.forceStop(
+            fixture.entry,
+            request: request,
+            timeout: .seconds(2)
+        )
+
+        XCTAssertTrue(forcedStop.isSuccess)
+        XCTAssertEqual(
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .process.liveness,
+            .stopped
+        )
+        XCTAssertEqual(
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .output.displayText,
+            ""
+        )
+        let generations = await fixture.process.startedGenerations
+        XCTAssertEqual(generations.count, 1)
+    }
+
+    func testForceStopRejectsRequestFromReplacedGeneration()
+        async throws {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(outputBeforeReturn: Data("first".utf8)),
+                .success(outputBeforeReturn: Data("second".utf8)),
+            ]
+        )
+        let firstStart = await fixture.runtime.start(fixture.entry)
+        XCTAssertTrue(firstStart.isSuccess)
+        let first = fixture.runtime.runtime(
+            for: fixture.entry.id
+        ).process
+        await fixture.process.setStopResult(.timedOut(first))
+        let timedOut = await fixture.runtime.stop(fixture.entry)
+        let staleRequest = try XCTUnwrap(timedOut.forceStopRequest)
+
+        await fixture.process.setStopResult(nil)
+        let stopped = await fixture.runtime.stop(fixture.entry)
+        XCTAssertTrue(stopped.isSuccess)
+        let secondStart = await fixture.runtime.start(fixture.entry)
+        XCTAssertTrue(secondStart.isSuccess)
+
+        let forced = await fixture.runtime.forceStop(
+            fixture.entry,
+            request: staleRequest
+        )
+
+        XCTAssertFalse(forced.isSuccess)
+        XCTAssertEqual(
+            forced.errorDescription,
+            RuntimeStoreError.operationSuperseded.errorDescription
+        )
+        let forceRequests = await fixture.process.forceStopRequests
+        XCTAssertTrue(forceRequests.isEmpty)
+        XCTAssertEqual(
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .process.liveness,
+            .running
+        )
+    }
+
+    func testForceRestartStartsReplacementWhenCapturedGenerationExited()
+        async throws {
+        let fixture = await makeTerminalRuntimeFixture(
+            startPlans: [
+                .success(outputBeforeReturn: Data("first".utf8)),
+                .success(outputBeforeReturn: Data("second".utf8)),
+            ]
+        )
+        let firstStart = await fixture.runtime.start(fixture.entry)
+        XCTAssertTrue(firstStart.isSuccess)
+        let first = fixture.runtime.runtime(
+            for: fixture.entry.id
+        ).process
+        await fixture.process.setStopResult(.timedOut(first))
+        let timedOut = await fixture.runtime.restart(fixture.entry)
+        let request = try XCTUnwrap(timedOut.forceStopRequest)
+
+        await fixture.process.setRefreshSnapshot(
+            ProcessSnapshot(
+                entryID: fixture.entry.id,
+                pid: nil,
+                processGroupID: nil,
+                liveness: .stopped,
+                launchedAt: first.launchedAt,
+                exitResult: .exited(code: 0)
+            )
+        )
+        await fixture.runtime.refreshAll()
+
+        let restarted = await fixture.runtime.forceRestart(
+            fixture.entry,
+            request: request
+        )
+
+        XCTAssertTrue(restarted.isSuccess)
+        let forceRequests = await fixture.process.forceStopRequests
+        XCTAssertTrue(forceRequests.isEmpty)
+        let generations = await fixture.process.startedGenerations
+        XCTAssertEqual(generations.count, 2)
+        XCTAssertEqual(
+            fixture.runtime.runtime(for: fixture.entry.id)
+                .process.liveness,
+            .running
+        )
+    }
+
     func testUnavailableTerminalDoesNotStopProcess()
         async {
         let fixture = await makeTerminalRuntimeFixture(

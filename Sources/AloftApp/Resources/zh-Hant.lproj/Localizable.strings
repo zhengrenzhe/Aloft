@@ -15,6 +15,13 @@
 "Command No Longer Exists" = "指令已不存在";
 "Command cannot be empty." = "指令不可為空白。";
 "Commands" = "指令";
+"Command Did Not Stop" = "指令未能停止";
+"Commands Did Not Stop" = "指令未能全部停止";
+"Command Did Not Restart" = "指令未能重新啟動";
+"Commands Did Not Restart" = "指令未能全部重新啟動";
+"Force Stop" = "強制停止";
+"Force Stop and Restart" = "強制停止並重新啟動";
+"SIGTERM timed out after 5 seconds. Force stopping sends SIGKILL to the listed process groups." = "SIGTERM 在 5 秒後逾時。強制停止會向列出的程序群組傳送 SIGKILL。";
 "Create or select a group to add commands." = "建立或選取群組以加入指令。";
 "Delete" = "刪除";
 "Did not stop process group %@." = "未能停止程序群組 %@。";
