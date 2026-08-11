@@ -95,6 +95,8 @@
 "──── Session started %@ ────" = "──── Session démarrée %@ ────";
 "Output View" = "Affichage de la sortie";
 "Terminal" = "Terminal";
+"New output" = "Nouvelle sortie";
+"Jump to latest output" = "Aller à la dernière sortie";
 "Text" = "Texte";
 "Metal rendering is unavailable. Using compatible rendering." = "Le rendu Metal est indisponible. Le rendu compatible est utilisé.";
 "Terminal rendering is unavailable. Showing text output." = "Le rendu du terminal est indisponible. Affichage de la sortie texte.";

@@ -95,6 +95,8 @@
 "──── Session started %@ ────" = "──── 会话开始于 %@ ────";
 "Output View" = "输出视图";
 "Terminal" = "终端";
+"New output" = "新输出";
+"Jump to latest output" = "跳到最新输出";
 "Text" = "文本";
 "Metal rendering is unavailable. Using compatible rendering." = "Metal 渲染不可用。正在使用兼容渲染。";
 "Terminal rendering is unavailable. Showing text output." = "终端渲染不可用。正在显示文本输出。";

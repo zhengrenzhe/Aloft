@@ -95,6 +95,8 @@
 "──── Session started %@ ────" = "──── بدأت الجلسة %@ ────";
 "Output View" = "عرض المخرجات";
 "Terminal" = "الطرفية";
+"New output" = "إخراج جديد";
+"Jump to latest output" = "الانتقال إلى أحدث إخراج";
 "Text" = "نص";
 "Metal rendering is unavailable. Using compatible rendering." = "تصيير Metal غير متاح. يُستخدم التصيير المتوافق.";
 "Terminal rendering is unavailable. Showing text output." = "تصيير الطرفية غير متاح. تُعرض المخرجات النصية.";

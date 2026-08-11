@@ -95,6 +95,8 @@
 "──── Session started %@ ────" = "──── Сеанс запущен %@ ────";
 "Output View" = "Представление вывода";
 "Terminal" = "Терминал";
+"New output" = "Новый вывод";
+"Jump to latest output" = "Перейти к последнему выводу";
 "Text" = "Текст";
 "Metal rendering is unavailable. Using compatible rendering." = "Рендеринг Metal недоступен. Используется совместимый рендеринг.";
 "Terminal rendering is unavailable. Showing text output." = "Рендеринг терминала недоступен. Отображается текстовый вывод.";

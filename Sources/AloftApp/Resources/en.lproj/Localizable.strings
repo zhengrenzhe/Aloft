@@ -95,6 +95,8 @@
 "──── Session started %@ ────" = "──── Session started %@ ────";
 "Output View" = "Output View";
 "Terminal" = "Terminal";
+"New output" = "New output";
+"Jump to latest output" = "Jump to latest output";
 "Text" = "Text";
 "Metal rendering is unavailable. Using compatible rendering." = "Metal rendering is unavailable. Using compatible rendering.";
 "Terminal rendering is unavailable. Showing text output." = "Terminal rendering is unavailable. Showing text output.";

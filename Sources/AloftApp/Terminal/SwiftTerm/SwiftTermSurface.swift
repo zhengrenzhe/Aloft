@@ -87,6 +87,7 @@ final class SwiftTermSurface:
             if viewportFollowRequest.consume() {
                 terminalView.scroll(toPosition: 1)
             }
+            terminalView.noteOutputReceived()
         }
         super.init()
         stateQueue.setSpecific(key: stateQueueKey, value: 1)
@@ -165,6 +166,7 @@ final class SwiftTermSurface:
     func clear() {
         enqueueOperation { [self] in
             pendingChunks.removeAll(keepingCapacity: true)
+            viewportFollowRequest.request()
             submitViewFeed(Data("\u{1b}c".utf8))
         }
     }
@@ -397,7 +399,10 @@ final class SwiftTermSurface:
     }
 
     func scrolled(source: TerminalView, position: Double) {
-        _ = (source, position)
+        Task { @MainActor [weak source] in
+            (source as? ReadOnlySwiftTermView)?
+                .terminalDidScroll(to: position)
+        }
     }
 
     func rangeChanged(

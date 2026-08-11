@@ -95,6 +95,8 @@
 "──── Session started %@ ────" = "──── セッション開始 %@ ────";
 "Output View" = "出力表示";
 "Terminal" = "ターミナル";
+"New output" = "新しい出力";
+"Jump to latest output" = "最新の出力へ移動";
 "Text" = "テキスト";
 "Metal rendering is unavailable. Using compatible rendering." = "Metal レンダリングを利用できません。互換レンダリングを使用しています。";
 "Terminal rendering is unavailable. Showing text output." = "ターミナルレンダリングを利用できません。テキスト出力を表示しています。";

@@ -281,6 +281,79 @@ final class SwiftTermSurfaceTests: XCTestCase {
         )
     }
 
+    func testScrolledBackOutputOffersJumpToLatestWithoutMovingViewport()
+        async {
+        let callbacks = TerminalCallbacksRecorder()
+        let surface = SwiftTermSurface(
+            callbacks: callbacks.callbacks
+        )
+        let generation = UUID()
+        surface.prepare(generation: generation)
+        surface.promote(
+            generation: generation,
+            at: Date(timeIntervalSince1970: 0)
+        )
+        let history = (0..<200)
+            .map { "history-\($0)\r\n" }
+            .joined()
+        surface.feed(
+            Data(history.utf8),
+            generation: generation
+        )
+        await surface.waitUntilIdle()
+
+        let view = surface.terminalViewForTesting
+        view.scroll(toPosition: 0)
+        surface.feed(
+            Data("unseen-latest-output\r\n".utf8),
+            generation: generation
+        )
+        await surface.waitUntilIdle()
+
+        XCTAssertEqual(view.scrollPosition, 0)
+        XCTAssertEqual(
+            jumpToLatestButton(in: view)?.isHidden,
+            false
+        )
+    }
+
+    func testJumpToLatestControlRestoresAutomaticFollowing() async throws {
+        let callbacks = TerminalCallbacksRecorder()
+        let surface = SwiftTermSurface(
+            callbacks: callbacks.callbacks
+        )
+        let generation = UUID()
+        surface.prepare(generation: generation)
+        surface.promote(
+            generation: generation,
+            at: Date(timeIntervalSince1970: 0)
+        )
+        let history = (0..<200)
+            .map { "history-\($0)\r\n" }
+            .joined()
+        surface.feed(
+            Data(history.utf8),
+            generation: generation
+        )
+        await surface.waitUntilIdle()
+
+        let view = surface.terminalViewForTesting
+        view.scroll(toPosition: 0)
+        surface.feed(
+            Data("unseen-latest-output\r\n".utf8),
+            generation: generation
+        )
+        await surface.waitUntilIdle()
+        let button = try XCTUnwrap(
+            jumpToLatestButton(in: view)
+        )
+
+        button.performClick(nil)
+
+        XCTAssertEqual(view.scrollPosition, 1)
+        XCTAssertTrue(button.isHidden)
+    }
+
     func testDiscardingActiveGenerationRejectsLateFeed() async {
         let callbacks = TerminalCallbacksRecorder()
         let surface = SwiftTermSurface(
@@ -414,6 +487,18 @@ private enum TestMetalActivationError: LocalizedError {
     var errorDescription: String? {
         "test activation failed"
     }
+}
+
+@MainActor
+private func jumpToLatestButton(
+    in view: ReadOnlySwiftTermView
+) -> NSButton? {
+    view.subviews
+        .compactMap { $0 as? NSButton }
+        .first {
+            $0.identifier?.rawValue
+                == "Aloft.Terminal.JumpToLatest"
+        }
 }
 
 private final class TerminalCallbacksRecorder: @unchecked Sendable {

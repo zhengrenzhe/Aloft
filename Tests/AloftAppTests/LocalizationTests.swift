@@ -114,6 +114,18 @@ final class LocalizationTests: XCTestCase {
         )
     }
 
+    func testEnglishContainsTerminalViewportKeys() throws {
+        let keys: Set<String> = [
+            "Jump to latest output",
+            "New output",
+        ]
+
+        XCTAssertTrue(
+            Set(try localization("en").keys)
+                .isSuperset(of: keys)
+        )
+    }
+
     func testEnglishContainsTerminationAlertKeys() throws {
         let keys: Set<String> = [
             "Clear All",

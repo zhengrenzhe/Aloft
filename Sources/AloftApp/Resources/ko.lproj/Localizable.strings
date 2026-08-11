@@ -95,6 +95,8 @@
 "──── Session started %@ ────" = "──── 세션 시작 %@ ────";
 "Output View" = "출력 보기";
 "Terminal" = "터미널";
+"New output" = "새 출력";
+"Jump to latest output" = "최신 출력으로 이동";
 "Text" = "텍스트";
 "Metal rendering is unavailable. Using compatible rendering." = "Metal 렌더링을 사용할 수 없습니다. 호환 렌더링을 사용합니다.";
 "Terminal rendering is unavailable. Showing text output." = "터미널 렌더링을 사용할 수 없습니다. 텍스트 출력을 표시합니다.";

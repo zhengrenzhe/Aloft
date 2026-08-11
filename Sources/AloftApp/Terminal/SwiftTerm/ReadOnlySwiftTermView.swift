@@ -3,8 +3,15 @@ import MetalKit
 import SwiftTerm
 
 final class ReadOnlySwiftTermView: TerminalView {
+    private static let jumpToLatestIdentifier =
+        NSUserInterfaceItemIdentifier(
+            "Aloft.Terminal.JumpToLatest"
+        )
+
     var onWindowAttachment: (() -> Void)?
     nonisolated(unsafe) private var inputEventMonitor: Any?
+    private var jumpToLatestButton: NSButton?
+    private var hasUnseenOutput = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -65,6 +72,22 @@ final class ReadOnlySwiftTermView: TerminalView {
         super.mouseDown(with: event)
     }
 
+    func noteOutputReceived() {
+        guard scrollPosition < 1 else {
+            clearUnseenOutput()
+            return
+        }
+        hasUnseenOutput = true
+        jumpToLatestButton?.isHidden = false
+    }
+
+    func terminalDidScroll(to position: Double) {
+        guard position >= 1 else {
+            return
+        }
+        clearUnseenOutput()
+    }
+
     func filterUserInputEvent(_ event: NSEvent) -> NSEvent? {
         guard event.window === window,
               window?.firstResponder === self else {
@@ -105,11 +128,65 @@ final class ReadOnlySwiftTermView: TerminalView {
     private func configureReadOnlyBehavior() {
         allowMouseReporting = false
         linkReporting = .none
+        installJumpToLatestButton()
         inputEventMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.keyDown, .keyUp, .flagsChanged]
         ) { [weak self] event in
             self?.filterUserInputEvent(event) ?? event
         }
+    }
+
+    private func installJumpToLatestButton() {
+        guard jumpToLatestButton == nil else {
+            return
+        }
+        let button = NSButton(
+            title: L10n.string("New output"),
+            target: self,
+            action: #selector(jumpToLatest(_:))
+        )
+        button.identifier = Self.jumpToLatestIdentifier
+        button.toolTip = L10n.string("Jump to latest output")
+        button.setAccessibilityLabel(
+            L10n.string("Jump to latest output")
+        )
+        button.image = NSImage(
+            systemSymbolName: "arrow.down.to.line.compact",
+            accessibilityDescription: nil
+        )
+        button.imagePosition = .imageLeading
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.isHidden = true
+        addSubview(button, positioned: .above, relativeTo: nil)
+        NSLayoutConstraint.activate([
+            button.trailingAnchor.constraint(
+                equalTo: trailingAnchor,
+                constant: -28
+            ),
+            button.bottomAnchor.constraint(
+                equalTo: bottomAnchor,
+                constant: -12
+            ),
+        ])
+        jumpToLatestButton = button
+    }
+
+    @objc
+    private func jumpToLatest(_ sender: NSButton) {
+        _ = sender
+        scroll(toPosition: 1)
+        clearUnseenOutput()
+    }
+
+    private func clearUnseenOutput() {
+        guard hasUnseenOutput
+                || jumpToLatestButton?.isHidden == false else {
+            return
+        }
+        hasUnseenOutput = false
+        jumpToLatestButton?.isHidden = true
     }
 
     deinit {
